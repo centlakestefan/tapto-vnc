@@ -13,6 +13,7 @@
 
 !/.gitignore
 !/.gitattributes
+!/.github/
 !/README.md
 !/LICENSE
 !/NOTICE

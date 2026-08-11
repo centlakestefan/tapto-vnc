@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # OpenSSL for the HTTPS provider APIs and for DES in VNC authentication;
+      # zlib for the ZRLE encoding.
+      - name: Install OpenSSL and zlib (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
+
+      # The windows-latest runner ships OpenSSL but not a CMake-findable zlib,
+      # so that one comes from the vcpkg the image already has.
+      - name: Install zlib (Windows)
+        if: runner.os == 'Windows'
+        run: vcpkg install zlib:x64-windows
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          cmake -S . -B build
+          -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      # --dump-tools builds every tool schema and serialises it, so it exercises
+      # the tool registry and JSON layer without needing a screen to connect to.
+      - name: Smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ./build/tapto-vnc --dump-tools > tools.json
+          count=$(jq length tools.json)
+          echo "tool definitions: $count"
+          test "$count" -ge 9
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          ./build/Release/tapto-vnc.exe --dump-tools > tools.json
+          if ((Get-Content tools.json -Raw | ConvertFrom-Json).Count -lt 9) { exit 1 }

@@ -1,5 +1,6 @@
 # tapto-vnc
 
+[![CI](https://github.com/centlakestefan/tapto-vnc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/centlakestefan/tapto-vnc/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)
 
