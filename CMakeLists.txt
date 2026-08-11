@@ -35,6 +35,20 @@ FetchContent_Declare(httplib
 
 FetchContent_MakeAvailable(nlohmann_json httplib)
 
+# --- Windows defines --------------------------------------------------------
+# <windows.h>, pulled in by <winsock2.h>, defines min and max as macros, which
+# breaks all seventeen std::min / std::max calls in the vendored RFB sources
+# under MSVC ("error C2589: '(': illegal token on right side of '::'"). MinGW
+# does not define them, so this only appears in an MSVC build.
+# WIN32_LEAN_AND_MEAN additionally keeps the old winsock.h out, which is what
+# you want when winsock2.h is in use.
+#
+# Declared after FetchContent on purpose, so it applies to our targets and not
+# to the fetched dependencies, which manage their own Windows defines.
+if(WIN32)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
 # --- Vendored RFB stack -----------------------------------------------------
 # Client-side sources copied from the cpp-vnc project (the VNC server, its
 # tests, and its example binaries are deliberately not vendored). Kept as a
