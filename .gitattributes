@@ -1,0 +1,6 @@
+# Keep LF in the repository regardless of platform. Without this, Git for
+# Windows rewrites every source file to CRLF on checkout, which shows up as a
+# whole-file diff the first time anyone works on this from another OS.
+* text=auto eol=lf
+
+*.png binary

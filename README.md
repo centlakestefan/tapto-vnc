@@ -1,0 +1,209 @@
+# tapto-vnc
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)
+
+Lets a language model drive a computer through its screen, keyboard and mouse,
+over VNC.
+
+It connects to a remote desktop, hands the model screenshots, and gives it
+tools to click, type and look closer. Nothing runs inside the guest —
+everything travels over the RFB wire protocol, so the target can be any machine
+with a VNC server or a VMware console, including one that has just booted or
+one you would rather not install anything on.
+
+```sh
+tapto-vnc --host 192.0.2.10 "Open the settings app and turn on dark mode"
+```
+
+**Highlights**
+
+- **Nothing to install on the target** — plain RFB, so it works on a fresh
+  install, a locked-down box, or a machine sitting at its login screen.
+- **Multiple providers** — Claude, any OpenAI-compatible endpoint (vLLM,
+  llama.cpp, LM Studio, OpenAI itself), or Gemini, sharing one set of tools and
+  one system prompt.
+- **Works with local models** — a 4-bit 27B quant can complete real GUI tasks,
+  not just frontier models.
+- **VMware consoles** — connects through a vCenter/ESXi WebMKS console, so a VM
+  needs no VNC server of its own.
+- **Remote keyboard layouts** — text is translated to the guest's layout, since
+  RFB carries key positions rather than characters.
+- **Self-contained** — one C++17 binary; nlohmann/json and cpp-httplib are
+  fetched at build time.
+
+## Build
+
+Requires CMake 3.16+ and a C++17 compiler (MSVC, gcc, or clang).
+
+```sh
+cmake -S . -B build
+cmake --build build --config Release
+```
+
+Binaries land at `build/tapto-vnc` (Linux) or `build/Release/tapto-vnc.exe`
+(Windows / MSVC), alongside `vnc-smoketest` — which connects and writes a PNG
+with no model involved, and is the first thing to reach for when a capture
+looks wrong.
+
+### Dependencies
+
+Fetched automatically at configure time via CMake `FetchContent` (needs git and
+network on the first configure):
+
+- [nlohmann/json](https://github.com/nlohmann/json) `v3.11.3`
+- [cpp-httplib](https://github.com/yhirose/cpp-httplib) `v0.15.3`
+
+**OpenSSL and zlib are required** — OpenSSL for the HTTPS provider APIs and for
+DES in VNC authentication, zlib for the ZRLE encoding. Both must be installed
+and findable by CMake. On Linux, install your distro's `libssl-dev` /
+`zlib1g-dev`. On Windows, if OpenSSL isn't auto-detected:
+
+```sh
+cmake -S . -B build -DOPENSSL_ROOT_DIR=C:/path/to/openssl
+```
+
+## First run
+
+Set a provider and a key, then give it a task:
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+tapto-vnc --host 192.0.2.10 --password secret "Open Notepad and type hello"
+```
+
+With no task on the command line it starts an interactive prompt; `/exit` or
+Ctrl-D quits.
+
+Add `--screenshots shots/` to keep every frame it saw, each click marked with a
+red dot. That is the only reliable record of what a run actually did — models
+report success they did not achieve.
+
+## Connecting
+
+**Plain VNC** — port is `5900 + display`.
+
+```sh
+tapto-vnc --host 192.0.2.10 --display 0 --password secret "your task"
+```
+
+**VMware console (WebMKS)** — naming a VM selects this mode. The console is RFB
+tunnelled over a TLS WebSocket on the ESXi host, gated by a ticket that expires
+in minutes, so it is acquired immediately before connecting.
+
+```sh
+tapto-vnc --vcenter vcenter.example.com --vm BUILD01 "your task"
+```
+
+vCenter credentials come from `$TAPTO_VCENTER_USER` / `$TAPTO_VCENTER_PASSWORD`
+or the config store. Add `--insecure` for a self-signed certificate.
+
+## Configuration
+
+Settings resolve as: command-line flag, then environment, then a config store
+at `~/.tapto/config`, then a default. The store is shared with `tapto-code`.
+Plain `key = value` lines; `#` and `;` begin comments.
+
+```
+provider-type = claude
+claude-api-key = sk-ant-...
+claude-model = claude-sonnet-5
+
+vcenter-host = vcenter.example.com
+vcenter-user = automation@vsphere.local
+vcenter-password = ...
+
+keyboard-layout = sv
+keep-recent-images = 2
+```
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `provider-type` | `claude` | `claude` / `openai` / `gemini` |
+| `api-key` | — | or the provider's environment variable |
+| `provider-url` | per provider | point at a local OpenAI-compatible server |
+| `model` | per provider | |
+| `keyboard-layout` | `us` | layout of the **remote** machine |
+| `keep-recent-images` | `3` | screenshots kept in the conversation |
+| `max-output-tokens` | `16000` | |
+| `max-tool-iterations` | `60` | tool calls per reply |
+| `trace-file` | unset | path for request/response diagnostics |
+
+`model`, `provider-url` and `api-key` can each be scoped to one provider
+(`gemini-model`, `openai-provider-url`), so several backends coexist in one
+store without a local endpoint's URL being sent to a hosted provider. The
+unscoped form applies only to the provider named by `provider-type`.
+
+API keys are read from the provider's environment variable first —
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` — falling back to
+config only when the variable is unset.
+
+### Useful flags
+
+| Flag | Why |
+| --- | --- |
+| `--screenshots <dir>` | save every frame, with a red dot marking where each click aimed |
+| `--trace <path>` | request/response diagnostics, including cache usage |
+| `--require-zoom on` | refuse a click unless a zoom containing it came first — for weaker models |
+| `--resolution 1280x1024` | set the guest's screen size before connecting |
+| `--thinking on\|off` | ask the model to reason before acting |
+| `--layout <name>` | keyboard layout of the remote machine |
+| `--type-test <text>` | type a string and save the result, no model involved |
+| `--quiet` | hide the model's intermediate reasoning |
+
+## Tools the model gets
+
+`vnc_screenshot` · `vnc_zoom` · `vnc_click` · `vnc_move` · `vnc_drag` ·
+`vnc_scroll` · `vnc_type` · `vnc_key` · `vnc_wait`
+
+Every action returns a fresh screenshot, because a description of an action is
+not evidence that it worked.
+
+`vnc_zoom` is the one worth knowing about: it returns a magnified crop of the
+screen carrying a numbered ruler and a grid labelled in screen coordinates, so
+the model can read a position off it instead of estimating one. Clicking
+accurately turns out to be the hard part of this whole exercise, and
+[docs/visual-grounding.md](docs/visual-grounding.md) explains why, with the
+measurements. [The Eyes of an Agent](https://taptomatic.com/blog/eyes-of-an-agent)
+is the same story told as prose.
+
+`vnc_type` translates text through the remote machine's keyboard layout —
+typing `@` on a Swedish guest means pressing a different key than on a US one.
+Characters the layout cannot reach are typed via Alt+numpad. See
+[docs/keyboard-layouts.md](docs/keyboard-layouts.md).
+
+## Safety
+
+The model is driving a real machine. It is told not to guess credentials, to
+confirm before irreversible actions, and to check that a click did what it
+intended. None of that substitutes for pointing it at a machine you are willing
+to have it break. Screenshots contain whatever is on that screen, and
+`--screenshots` writes them to disk unencrypted.
+
+## Status
+
+Working and useful, not finished. Known gaps: the incremental (delta) rendering
+path has never had a controlled test, and Proxmox/noVNC support is designed but
+unbuilt ([docs/proxmox.md](docs/proxmox.md)).
+
+## Credits
+
+The RFB client is vendored from `cpp-vnc`; the agent loop, tool registry and
+provider clients are adapted from
+[tapto-code](https://github.com/centlakestefan/tapto-code), a command-line AI
+coding assistant built on the same foundations. Local modifications to vendored
+code are listed in `third_party/rfb/PATCHES.md`.
+
+## Part of TaptoMatic
+
+tapto-vnc is a standalone spin-off of
+[TaptoMatic](https://taptomatic.com) — a larger AI-powered development platform
+from Centlake Software AB where teams of AI agents collaborate on software
+projects under your direction. Like tapto-vnc, it runs locally and uses your own
+provider API keys.
+
+## License
+
+tapto-vnc is licensed under the Apache License, Version 2.0 (SPDX:
+`Apache-2.0`). See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Copyright 2026 Centlake Software AB.

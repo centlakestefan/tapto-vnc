@@ -1,0 +1,23 @@
+# A whitelist rather than a blacklist, on purpose.
+#
+# Runs create screenshot directories with ad-hoc names (shots-sonnet5, qwen-a,
+# gem-smoke3, calib) holding pictures of a live desktop, alongside traces
+# containing entire conversations. A blacklist would quietly commit the next
+# name someone invents, and the contents are exactly what should not be
+# published: the test machine's screen, including whatever files and windows
+# happened to be open.
+#
+# Add new source paths below explicitly.
+
+/*
+
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/LICENSE
+!/NOTICE
+!/CMakeLists.txt
+!/src/
+!/include/
+!/docs/
+!/third_party/

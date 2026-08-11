@@ -1,0 +1,19 @@
+tapto-vnc
+Copyright 2026 Centlake Software AB
+
+Licensed under the Apache License, Version 2.0 (see the LICENSE file).
+
+This product bundles third-party code in third_party/, retained under its own
+licence terms:
+
+  - third_party/rfb/  RFB (VNC) client sources from the cpp-vnc project.
+                      Local modifications are recorded in
+                      third_party/rfb/PATCHES.md.
+  - third_party/stb/  stb_image_write.h by Sean Barrett (public domain / MIT).
+
+The following dependencies are fetched at build time rather than bundled, and
+are covered by their own licences:
+
+  - nlohmann/json   (MIT)
+  - cpp-httplib     (MIT)
+  - OpenSSL, zlib   (as installed on the build system)
