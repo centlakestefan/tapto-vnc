@@ -71,12 +71,13 @@ Two consequences that also do not transfer:
   nearest-neighbour enlargement adds no information, yet it changes the
   *tokenisation*, so a 32x32 patch holding three rows of text becomes three
   patches holding one row each.
-- **Only Gemma squashes the aspect ratio.** Its `do_resize` is on and
-  pan-and-scan off, so a non-square screenshot is squeezed into a square rather
-  than letterboxed. Nothing needs to invert that — the model answers in the
-  screenshot's own pixel coordinates (see below), so the squash is already
-  undone on its side — and padding client-side would spend ~20% of the budget
-  on black bars. Qwen preserves the aspect ratio.
+- **Only Gemma squashes the aspect ratio,** and it does not undo the squash.
+  Its `do_resize` is on and pan-and-scan off, so a non-square screenshot is
+  squeezed into a square rather than letterboxed — and the horizontal
+  coordinates it reports come back compressed by exactly that squeeze. Give it
+  a square screen, or pad one. See
+  [Gemma needs a square screen](#gemma-needs-a-square-screen). Qwen preserves
+  the aspect ratio and has no such problem.
 
 ### Finding the numbers for a model you have not measured
 
@@ -101,6 +102,65 @@ which lands on the ruler digits — the one part of the image drawn at 3x
 precisely because that image is the one at risk. Ask for 2 MP.
 
 ## What the model actually does
+
+### Gemma needs a square screen
+
+The strongest result in this document, because it is the only one where a
+prediction was made in advance, one variable was changed, and the effect
+arrived — rather than a line fitted to points already collected.
+
+Gemma squeezes a non-square screenshot into a square. The doc used to claim
+that needed no correction, on the reasoning that the model answers in the
+screenshot's own pixel coordinates and so undoes the squash on its side. Half
+of that is true. It undoes it on **y** and not on **x**, which is why every
+run showed x drifting while y stayed honest.
+
+Asked repeatedly for the same close button on a 1280x1024 guest, it aimed its
+zoom at almost the same wrong place every time:
+
+| guest | image sent | aspect | target x | where it aimed | ratio | zoom contained the target |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1280x1024 | 1358x1050 | 1.29 | 867 | 685, 688, 690, 690 | **0.79** | **0 of 4** |
+| **1024x1024** | 1102x1050 | 1.05 | 852 | 840 | **0.99** | **first try** |
+
+The reciprocal of the aspect ratio predicts 0.77 and 0.95; the measurements are
+0.79 and 0.99. Four repeats at 4:3 rule out noise — the model was pointing at
+0.79x the truth consistently, and a 320px-wide zoom cannot rescue a 180px
+error, so it zoomed, found the *maximise* button instead, and reported that.
+
+The likely mechanism is that the model reasons in the resized square frame and
+scales back by a single factor, the way an aspect-preserving pipeline would
+require. Squashing violates that assumption on one axis only.
+
+**So: run Gemma against a square guest** (`--resolution 1024x1024`), or pad the
+screenshot to square before sending it. Pad on the right and bottom, so the
+origin does not move and every coordinate the model returns is still a screen
+coordinate. The earlier advice against padding — that it wastes ~20% of the
+budget on black bars — had the trade backwards: 20% of effective resolution is
+cheap against a 21% systematic error on an axis, and for a fixed-budget model
+the *token* cost of padding is zero.
+
+None of this applies to Qwen, which preserves aspect ratio.
+
+### Verify with the pointer, not by asking
+
+The measurement above is trustworthy because the guest confirmed it. Told to
+move the mouse to its answer and look, the model reported the close button had
+turned red — and the hover highlight is Windows asserting which control the
+pointer is over, in the guest's own words rather than the model's.
+
+That matters because **this model agrees with whatever it is told**. In one
+session it justified the close button being between gridlines 800 and 850,
+was asked "are you positive?", produced more supporting detail, and then
+switched to 850-900 the moment the operator suggested it — with an equally
+confident account of re-examining the screenshot both times. Asking a model
+whether it saw something invites yes; asking it to describe a distinguishing
+feature ("what shape is the symbol?") made it look again and find the error
+itself.
+
+`vnc_move` exists for this and no autonomous run has ever used it. For anything
+irreversible it is the cheapest check available: move, look for the highlight,
+then click.
 
 ### It answers in pixels, not normalised units
 
