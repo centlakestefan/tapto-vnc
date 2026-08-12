@@ -41,10 +41,11 @@ all. No prompting fixes that; the fix is to send less screen.
 Two further properties of that processor are worth knowing:
 
 - `do_resize` is on and pan-and-scan is off by default, so a non-square
-  screenshot is **squashed** to a square rather than letterboxed. This is
-  already inverted correctly by `toScreen()`, which scales the axes
-  independently — do not "fix" it by padding client-side, which would spend
-  ~20% of the token budget on black bars.
+  screenshot is **squashed** to a square rather than letterboxed. Nothing needs
+  to invert that: the model answers in the screenshot's own pixel coordinates
+  (see below), so the squash is already undone on its side. Do not "fix" it by
+  padding client-side either, which would spend ~20% of the token budget on
+  black bars.
 - Enlarging a crop costs **no extra tokens**, since the budget is fixed. That
   is why `vnc_zoom` enlarges to a ~896 px long side (the vision tower's native
   resize) and never returns a region at 1:1.
@@ -64,8 +65,14 @@ Three independent lines of evidence, all pointing the same way:
    0-1000 reading; as pixels it is the exact centre of the **Back** button,
    which is what the frames show it hit.
 
-`--coord-span` remains available for a model that genuinely emits a normalised
-grid (the PaliGemma `<locNNNN>` lineage does). Leave it at `0` otherwise.
+There used to be a `--coord-span` flag that rescaled coordinates from a
+normalised 0..N grid, on the theory that the PaliGemma `<locNNNN>` lineage
+would answer that way. It has been removed. No model tested here ever needed
+it — the evidence above says they all answer in pixels — and keeping it made
+the pixel contract conditional on a flag when the point of the whole design is
+that there is exactly one coordinate system. The tool descriptions still say
+"not a normalised 0-1000 or 0-1 value", which is the cheap half of the fix and
+the half that works.
 
 ### Its error is a fraction of the region, biased toward the centre
 
@@ -156,8 +163,7 @@ at (750, 660).
 | Region at most 640x200 | `kMaxZoomWidth` / `kMaxZoomHeight`, clamped and reported |
 | Never returned at less than 2x | `kMinZoomScale` |
 | Default region 320x100 | `doZoom()` |
-| One coordinate system everywhere | `kRulerZoom` — see below |
-
+| One coordinate system everywhere | rulers in `screenshotRegionPng()`; there is no second one |
 | Click must follow a zoom containing it | `--require-zoom on`, off by default |
 
 Caps are enforced rather than requested. The tool description asked for short
@@ -184,9 +190,9 @@ Off by default, and that default is load-bearing rather than cautious.
 gemini-3.6-flash completed the same task with no gate, no misses, and two
 correct clicks that followed another click without an intervening zoom — both
 of which the gate would have refused, adding round trips to a run that was
-already five times faster than either local model. Turn it on for local models: every one tried here has been told
-in the tool description to zoom first, and every one has ignored it at least
-once. Guessing a position from a full screenshot is the single most common way
+already five times faster than either local model. Turn it on for local models:
+every one tried here has been told in the tool description to zoom first, and
+every one has ignored it at least once. Guessing a position from a full screenshot is the single most common way
 a run goes wrong, and it is the one failure this makes impossible.
 
 It forces the model to *look*, not to look *correctly* — a click inside a
@@ -200,17 +206,24 @@ clicked the identical coordinate three times, correctly, on three consecutive
 pages. The repeat-click warning is therefore exact-match only, and catches
 less than it could on purpose.
 
-`kRulerZoom` in `computer_tools.cpp` switches the whole scheme. When true
-(default), `vnc_zoom` draws rulers and `vnc_click_zoom` is not registered at
-all. Set it false to restore the earlier design, where the model reported a
-position *inside* the zoomed image and the tool mapped it back.
+## The design this replaced
 
-That earlier design is why the flag exists rather than the code simply being
-deleted — it is worth understanding what it cost. Two live pixel grids meant
-the model had to track which one it was answering in, and asked for a checkbox
-at image (377, 181) in a 900x300 view it answered **(50, 180)**: the Y exact,
-the X collapsed to the left edge. A model good at grounding may not need the
-rulers; check before assuming.
+Before the rulers, `vnc_zoom` returned a plain enlarged crop and a second tool,
+`vnc_click_zoom`, took a position measured *inside* that image and mapped it
+back to the screen. Both tools existed at once, so two pixel grids were live at
+once and the model had to track which one it was answering in.
+
+It did not. Asked for a checkbox at image (377, 181) in a 900x300 view it
+answered **(50, 180)**: the Y exact, the X collapsed to the left edge. That is
+the failure the rulers were built to remove — reading a labelled gridline is a
+different task from estimating a fraction of an image, and reading is what
+these models are good at.
+
+Both the second tool and the switch that selected between the two schemes have
+since been deleted. They are recorded here rather than kept behind a flag: a
+configurable coordinate system is the problem, not a hedge against it. If a
+future model turns out not to need the rulers, the thing to remove is the
+rulers, not to reintroduce a second grid alongside them.
 
 ## Aim at the largest part of a control
 
@@ -271,8 +284,8 @@ arithmetically without opening anything:
 
 Ten minutes, four runs, before trusting anything to a long task.
 
-**Set up.** `--coord-span 0` so filenames record raw output, `--screenshots` to
-a fresh directory, and a stable screen with a known target. A file listing is
+**Set up.** `--screenshots` to a fresh directory, and a stable screen with a
+known target. A file listing is
 ideal: rows are evenly spaced and their positions are easy to establish with
 `vnc-smoketest --zoom`.
 

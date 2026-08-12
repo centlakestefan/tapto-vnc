@@ -39,20 +39,6 @@ std::vector<ToolSpec> makeComputerTools();
 // Retrieves the session a tool should act on. Throws if it was never set.
 VncSession& sessionFrom(Context& context);
 
-// The coordinate space the model reports positions in.
-//
-// Most models answer in screen pixels, which is what the tool descriptions ask
-// for. Some vision models — notably the Gemma/PaliGemma lineage, which is
-// trained on <locNNNN> tokens over a normalised grid — answer on a fixed 0..N
-// scale regardless of the actual resolution. Taken literally those land far
-// from the target: on a 1904x861 screen a normalised x is squashed to about a
-// fifth of its intended position.
-//
-// `span` of 0 means pixels (the default). A positive value means coordinates
-// arrive on a 0..span grid and are rescaled to the framebuffer.
-void setCoordinateSpan(int span);
-int  coordinateSpan();
-
 // Requires vnc_click to be preceded by a vnc_zoom that contains the point
 // being clicked, with no action in between. A click that fails the test is
 // refused with an explanation rather than delivered.

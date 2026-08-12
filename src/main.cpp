@@ -275,8 +275,6 @@ void usage(const char* argv0) {
         << "                      that region. Stops a model guessing positions\n"
         << "                      from a full screenshot; costs one extra step per\n"
         << "                      click. Worth it for local models.\n"
-        << "  --coord-span <n>    Model reports coordinates on a 0..n grid instead\n"
-        << "                      of pixels (0 = pixels; config coordinate-span)\n"
         << "  --layout <name>     Keyboard layout of the REMOTE machine\n"
         << "                      (config key keyboard-layout; default us)\n"
         << "  --altcode <mode>    on|off|auto — Alt+numpad fallback for characters\n"
@@ -385,7 +383,7 @@ int main(int argc, char** argv) {
     tapto::VCenterCredentials vcenter;
     // Left empty so config can supply them; CLI flags win when present.
     std::string vmName, model, effort, trace, task, provider, layout, typeTest, altcode, color,
-                screenshotDir, providerUrl, coordSpan, resolution, thinking, requireZoom;
+                screenshotDir, providerUrl, resolution, thinking, requireZoom;
     int maxSteps = 0;
     int resolutionWidth = 0, resolutionHeight = 0;
     bool quiet = false;
@@ -416,7 +414,6 @@ int main(int argc, char** argv) {
         if (const char* v = option(argc, argv, i, "--screenshots")) { screenshotDir = v; continue; }
         if (const char* v = option(argc, argv, i, "--color"))     { color = v; continue; }
         if (const char* v = option(argc, argv, i, "--altcode"))   { altcode = v; continue; }
-        if (const char* v = option(argc, argv, i, "--coord-span")) { coordSpan = v; continue; }
         if (const char* v = option(argc, argv, i, "--layout"))    { layout = v; continue; }
         if (const char* v = option(argc, argv, i, "--type-test")) { typeTest = v; continue; }
         if (const char* v = option(argc, argv, i, "--provider-url")) { providerUrl = v; continue; }
@@ -542,12 +539,6 @@ int main(int argc, char** argv) {
         std::cerr << "ERROR: --color expects auto, always or never\n";
         return 2;
     }
-
-    // Some vision models report positions on a normalised grid rather than in
-    // pixels; rescale them here rather than letting every click miss.
-    if (coordSpan.empty()) coordSpan = settings.valueOr("coordinate-span", "0");
-    try { tapto::setCoordinateSpan(std::stoi(coordSpan)); }
-    catch (const std::exception&) { std::cerr << "ERROR: --coord-span expects a number\n"; return 2; }
 
     // Keyboard layout of the *remote* machine, not this one.
     if (layout.empty()) layout = settings.valueOr("keyboard-layout", "us");

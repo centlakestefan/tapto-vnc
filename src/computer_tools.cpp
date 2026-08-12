@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -132,13 +131,10 @@ void saveScreenshot(Context& context, const std::vector<uint8_t>& png,
 }
 
 // The most recent vnc_zoom. A file-scope value rather than Context state
-// because there is exactly one session per process, which is the same reason
-// g_coordinateSpan below is one.
+// because there is exactly one session per process.
 struct ZoomView {
     VncSession::Rect region;
     int scale = 0;      // 0 = no zoom has been taken yet
-    int imageWidth = 0;
-    int imageHeight = 0;
     // Cleared by every action, because an action changes the screen and a zoom
     // of the previous screen is not evidence about the current one.
     bool fresh = false;
@@ -214,21 +210,6 @@ constexpr int kMinZoomWidth  = 240;
 constexpr int kMinZoomHeight = 80;
 constexpr int kMinZoomScale  = 2;
 
-// When true, vnc_zoom returns an image with screen-coordinate rulers and a
-// grid, and vnc_click_zoom is not offered at all: the model reads a position
-// off the ruler and clicks it with vnc_click, in the one coordinate system
-// everything else uses.
-//
-// The alternative it replaces asked the model to report a position inside the
-// zoomed image, which meant two pixel grids live at once. That is what it got
-// wrong — asked for a checkbox at (377,181) in a 900x300 view it answered
-// (50,180): the y exact, the x collapsed to the left edge. Reading a labelled
-// gridline is a different task from estimating a fraction of an image, and
-// reading is what this model is good at.
-//
-// Set to false to go back to the relative-coordinate scheme.
-constexpr bool kRulerZoom = true;
-
 // Enlargement for a requested region: enough to be worth looking at, without
 // producing an image so large it costs more tokens than it repays.
 //
@@ -250,17 +231,20 @@ int zoomScaleFor(int width, int height) {
     return scale < kMinZoomScale ? kMinZoomScale : (scale > 4 ? 4 : scale);
 }
 
-int g_coordinateSpan = 0;   // 0 = coordinates are already pixels
-
-// Converts a reported coordinate pair into framebuffer pixels, then clamps.
+// Holds a reported coordinate pair inside the framebuffer.
 //
 // Clamping rather than failing is deliberate: a coordinate a few pixels outside
 // the screen is a rounding slip, not a reason to abandon the turn.
-void toScreen(const VncSession& session, int& x, int& y) {
-    if (g_coordinateSpan > 0) {
-        x = static_cast<int>(std::llround(static_cast<double>(x) * session.width()  / g_coordinateSpan));
-        y = static_cast<int>(std::llround(static_cast<double>(y) * session.height() / g_coordinateSpan));
-    }
+//
+// There is no coordinate conversion here, and deliberately so. Positions are
+// screen pixels everywhere — in the tool schemas, in the zoom rulers, in the
+// status line and in the saved filenames — so a number the model reads off a
+// ruler is the same number vnc_click receives. An earlier build could rescale
+// from a normalised 0..N grid for models trained that way; it made the pixel
+// contract conditional on a flag, and every accuracy problem worth solving
+// turned out to be about what the model could see, not about which grid it was
+// answering on.
+void clampToScreen(const VncSession& session, int& x, int& y) {
     const int maxX = session.width()  > 0 ? session.width()  - 1 : 0;
     const int maxY = session.height() > 0 ? session.height() - 1 : 0;
     x = x < 0 ? 0 : (x > maxX ? maxX : x);
@@ -275,18 +259,12 @@ json coordinateSchema(const char* xDesc, const char* yDesc) {
 }
 
 // Spelled out in every coordinate description because some vision models
-// default to a normalised grid. Saying it here fixes the well-behaved ones;
-// setCoordinateSpan() exists for the rest.
+// default to a normalised grid — the Gemma/PaliGemma lineage is trained on
+// <locNNNN> tokens over a 0..1024 space, and will answer that way unasked. The
+// tools take pixels and only pixels, so the schema has to say so.
 constexpr const char* kPixelNote =
     " Give this in actual screen pixels matching the screenshot's real size, "
     "not a normalised 0-1000 or 0-1 value.";
-
-// The same warning for the zoomed space, where it matters more: there are two
-// pixel grids in play at once, so "pixels" alone does not say which.
-constexpr const char* kZoomPixelNote =
-    " Measure this in the zoomed image's own pixels, from its top-left corner. The "
-    "vnc_zoom result states that image's exact size — use that scale, not a "
-    "normalised 0-1000 or 0-1 value, and not a screen coordinate.";
 
 // --- executors -------------------------------------------------------------
 
@@ -300,7 +278,7 @@ std::string doMove(Context& context, const json& input) {
     int x = 0, y = 0;
     const std::string missing = requirePoint(input, "x", "y", x, y);
     if (!missing.empty()) return "ERROR: " + missing;
-    toScreen(session, x, y);
+    clampToScreen(session, x, y);
     session.sendPointer(0, static_cast<uint16_t>(x), static_cast<uint16_t>(y));
     std::ostringstream label;
     label << "Moved pointer to (" << x << "," << y << ")";
@@ -330,8 +308,7 @@ constexpr const char* kRepeatClickNote =
     "centred on your target and look at where it actually is before clicking again.";
 
 // Delivers a click at an already-resolved screen coordinate. Returns an error
-// message, or empty on success. Shared by vnc_click and vnc_click_zoom, which
-// differ only in the coordinate space they start from.
+// message, or empty on success.
 std::string sendClick(VncSession& session, int x, int y,
                       const std::string& buttonName, int clicks) {
     const uint8_t mask = input::buttonMaskForName(buttonName);
@@ -380,7 +357,7 @@ std::string doClick(Context& context, const json& input) {
     int x = 0, y = 0;
     const std::string missing = requirePoint(input, "x", "y", x, y);
     if (!missing.empty()) return "ERROR: " + missing;
-    toScreen(session, x, y);
+    clampToScreen(session, x, y);
 
     const std::string gate = zoomGateFor(x, y);
     if (!gate.empty()) return "ERROR: " + gate;
@@ -421,15 +398,8 @@ std::string doZoom(Context& context, const json& input) {
     region.width  = intField(input, "width", 320);
     region.height = intField(input, "height", 100);
 
-    // The region is named in screen coordinates, so it goes through the same
-    // rescaling as every other coordinate the model reports.
-    toScreen(session, region.x, region.y);
-    if (g_coordinateSpan > 0) {
-        region.width  = static_cast<int>(std::llround(
-            static_cast<double>(region.width)  * session.width()  / g_coordinateSpan));
-        region.height = static_cast<int>(std::llround(
-            static_cast<double>(region.height) * session.height() / g_coordinateSpan));
-    }
+    // The region's origin is a screen coordinate like any other.
+    clampToScreen(session, region.x, region.y);
     // Floors, not suggestions. A run asked repeatedly for 200x64 regions that
     // did not reach the button it was aiming at, clicked inside them anyway,
     // and hit empty panel three times running. A crop this small rarely
@@ -452,16 +422,14 @@ std::string doZoom(Context& context, const json& input) {
 
     const int scale = zoomScaleFor(region.width, region.height);
     std::vector<uint8_t> png =
-        session.screenshotRegionPng(region, scale, nullptr, kRulerZoom);
+        session.screenshotRegionPng(region, scale, nullptr, /*rulers=*/true);
     if (png.empty()) return "ERROR: could not render that region of the screen";
 
     // screenshotRegionPng clamped `region` to the framebuffer, so this records
     // the rectangle actually rendered rather than the one asked for.
-    g_lastZoom.region      = region;
-    g_lastZoom.fresh       = true;
-    g_lastZoom.scale       = scale;
-    g_lastZoom.imageWidth  = region.width  * scale;
-    g_lastZoom.imageHeight = region.height * scale;
+    g_lastZoom.region = region;
+    g_lastZoom.fresh  = true;
+    g_lastZoom.scale  = scale;
 
     std::ostringstream label;
     label << "Zoomed " << scale << "x on " << region.width << "x" << region.height
@@ -469,8 +437,10 @@ std::string doZoom(Context& context, const json& input) {
 
     ToolImage shot;
     shot.png    = std::move(png);
-    shot.width  = g_lastZoom.imageWidth;
-    shot.height = g_lastZoom.imageHeight;
+    // The rendered image is the enlarged region plus the ruler margins, so
+    // these are the PNG's real dimensions rather than the region's.
+    shot.width  = VncSession::kRulerMarginLeft + region.width  * scale;
+    shot.height = VncSession::kRulerMarginTop  + region.height * scale;
     shot.label  = label.str();
     saveScreenshot(context, shot.png, shot.label);
     putToolImage(context, shot);
@@ -479,26 +449,19 @@ std::string doZoom(Context& context, const json& input) {
     out << "Zoomed view of the screen region x=" << region.x << ".."
         << region.x + region.width - 1 << ", y=" << region.y << ".."
         << region.y + region.height - 1 << ", enlarged " << scale << "x.";
-    if (kRulerZoom) {
-        out << " The image has a numbered ruler across the top and down the left "
-               "side, and a magenta grid drawn from them. Those numbers are real "
-               "screen coordinates, the same ones vnc_click takes. To click "
-               "something in this view, find the gridlines nearest it and read "
-               "their labels off the rulers, then pass that straight to vnc_click."
-            << " Be careful not to give vnc_click a position measured in this "
-               "image's own pixels — the image is larger than the region it shows "
-               "and starts at its top-left corner, so those numbers are much too "
-               "big. If you have measured something that way, convert it first: "
-            << "screen_x = " << region.x << " + (image_x - " << VncSession::kRulerMarginLeft
-            << ") / " << scale
-            << ", screen_y = " << region.y << " + (image_y - " << VncSession::kRulerMarginTop
-            << ") / " << scale << ".";
-    } else {
-        out << " The attached image is " << g_lastZoom.imageWidth << "x"
-            << g_lastZoom.imageHeight << " pixels and shows only that region, not "
-            << "the whole screen. To click something you can see in it, use "
-            << "vnc_click_zoom with coordinates measured in this image.";
-    }
+    out << " The image has a numbered ruler across the top and down the left "
+           "side, and a magenta grid drawn from them. Those numbers are real "
+           "screen coordinates, the same ones vnc_click takes. To click "
+           "something in this view, find the gridlines nearest it and read "
+           "their labels off the rulers, then pass that straight to vnc_click."
+        << " Be careful not to give vnc_click a position measured in this "
+           "image's own pixels — the image is larger than the region it shows "
+           "and starts at its top-left corner, so those numbers are much too "
+           "big. If you have measured something that way, convert it first: "
+        << "screen_x = " << region.x << " + (image_x - " << VncSession::kRulerMarginLeft
+        << ") / " << scale
+        << ", screen_y = " << region.y << " + (image_y - " << VncSession::kRulerMarginTop
+        << ") / " << scale << ".";
     if (!capped.empty()) {
         out << " NOTE: the " << capped << " you asked for was larger than a zoom allows "
             << "and was reduced, so this shows less than you requested. A zoom is for "
@@ -508,43 +471,6 @@ std::string doZoom(Context& context, const json& input) {
     return out.str();
 }
 
-std::string doClickZoom(Context& context, const json& input) {
-    VncSession& session = sessionFrom(context);
-    if (g_lastZoom.scale <= 0) {
-        return "ERROR: no zoomed view has been taken yet. Call vnc_zoom first, then "
-               "give coordinates measured in the image it returns.";
-    }
-
-    int zx = intField(input, "x"), zy = intField(input, "y");
-    if (g_coordinateSpan > 0) {
-        zx = static_cast<int>(std::llround(
-            static_cast<double>(zx) * g_lastZoom.imageWidth  / g_coordinateSpan));
-        zy = static_cast<int>(std::llround(
-            static_cast<double>(zy) * g_lastZoom.imageHeight / g_coordinateSpan));
-    }
-    zx = zx < 0 ? 0 : (zx > g_lastZoom.imageWidth  - 1 ? g_lastZoom.imageWidth  - 1 : zx);
-    zy = zy < 0 ? 0 : (zy > g_lastZoom.imageHeight - 1 ? g_lastZoom.imageHeight - 1 : zy);
-
-    const int x = g_lastZoom.region.x + zx / g_lastZoom.scale;
-    const int y = g_lastZoom.region.y + zy / g_lastZoom.scale;
-
-    const std::string buttonName = stringField(input, "button", "left");
-    const int clicks = std::max(1, intField(input, "clicks", 1));
-
-    const bool repeat = noteClick(x, y);
-    const std::string error = sendClick(session, x, y, buttonName, clicks);
-    if (!error.empty()) return "ERROR: " + error;
-
-    std::ostringstream label;
-    label << (clicks > 1 ? std::to_string(clicks) + "x " : "") << buttonName
-          << "-clicked at (" << x << "," << y << ") from the zoomed view at ("
-          << zx << "," << zy << ")";
-    const VncSession::Marker marker{x, y, 5};
-    std::string result = captureInto(context, session, label.str(), &marker);
-    if (repeat) result += kRepeatClickNote;
-    return result;
-}
-
 std::string doDrag(Context& context, const json& input) {
     VncSession& session = sessionFrom(context);
     int fromX = 0, fromY = 0, toX = 0, toY = 0;
@@ -552,8 +478,8 @@ std::string doDrag(Context& context, const json& input) {
     if (!missingFrom.empty()) return "ERROR: " + missingFrom;
     const std::string missingTo = requirePoint(input, "to_x", "to_y", toX, toY);
     if (!missingTo.empty()) return "ERROR: " + missingTo;
-    toScreen(session, fromX, fromY);
-    toScreen(session, toX, toY);
+    clampToScreen(session, fromX, fromY);
+    clampToScreen(session, toX, toY);
 
     const std::string buttonName = stringField(input, "button", "left");
     const uint8_t mask = input::buttonMaskForName(buttonName);
@@ -583,7 +509,7 @@ std::string doScroll(Context& context, const json& input) {
     int x = 0, y = 0;
     const std::string missing = requirePoint(input, "x", "y", x, y);
     if (!missing.empty()) return "ERROR: " + missing;
-    toScreen(session, x, y);
+    clampToScreen(session, x, y);
 
     const std::string direction = stringField(input, "direction", "down");
     uint8_t mask = 0;
@@ -719,9 +645,6 @@ json objectSchema(json properties, std::vector<std::string> required) {
 
 }  // namespace
 
-void setCoordinateSpan(int span) { g_coordinateSpan = span > 0 ? span : 0; }
-int  coordinateSpan() { return g_coordinateSpan; }
-
 void setRequireZoom(bool require) { g_requireZoom = require; }
 bool requireZoom() { return g_requireZoom; }
 
@@ -796,31 +719,6 @@ std::vector<ToolSpec> makeComputerTools() {
             "before assuming you misread the numbers; most likely the target was never in "
             "the view.",
             objectSchema(props, {"x", "y"}), doZoom, ""});
-    }
-
-    if (!kRulerZoom) {
-        json props = json{
-            {"x", {{"type", "integer"},
-                   {"description", std::string("Horizontal position within the zoomed image, "
-                                               "0 at its left edge.") + kZoomPixelNote}}},
-            {"y", {{"type", "integer"},
-                   {"description", std::string("Vertical position within the zoomed image, "
-                                               "0 at its top edge.") + kZoomPixelNote}}},
-        };
-        props["button"] = {{"type", "string"}, {"enum", {"left", "middle", "right"}},
-                           {"description", "Mouse button to click. Defaults to left."}};
-        props["clicks"] = {{"type", "integer"}, {"minimum", 1}, {"maximum", 3},
-                           {"description", "Number of clicks; use 2 for a double-click. Defaults to 1."}};
-        tools.push_back(ToolSpec{
-            "vnc_click_zoom",
-            "Click something visible in the most recent vnc_zoom image, giving its "
-            "position within that image rather than on the screen. The enlarged view is "
-            "translated back to the real screen position for you.\n"
-            "Prefer this over vnc_click for anything small or tightly packed: aiming "
-            "inside an enlarged view is far more accurate than aiming at a full "
-            "screenshot. Returns a normal full-screen screenshot so you can confirm the "
-            "result. Requires a vnc_zoom first.",
-            objectSchema(props, {"x", "y"}), doClickZoom, ""});
     }
 
     tools.push_back(ToolSpec{

@@ -88,7 +88,6 @@ inline std::string formatUnknownToolError(const std::string& tool_name, const Re
 //   vnc_screenshot            -> "Screenshot"
 //   vnc_click                 -> "Click left (412,300)"
 //   vnc_zoom                  -> "Zoom 320x100 at (150,225)"
-//   vnc_click_zoom            -> "Click left in zoom (250,120)"
 //   vnc_move                  -> "Move to (412,300)"
 //   vnc_drag                  -> "Drag (10,20) -> (90,120)"
 //   vnc_scroll                -> "Scroll down x3 at (400,500)"
@@ -148,15 +147,6 @@ inline std::string getToolDisplayName(const std::string& tool_name, const nlohma
         // "Zoom at (x,y)" means the model did not ask for a size.
         if (!has("width") && !has("height")) return "Zoom at " + point("x", "y");
         return "Zoom " + coord("width") + "x" + coord("height") + " at " + point("x", "y");
-    }
-
-    // Only registered when the ruler scheme is off; its coordinates are
-    // positions inside the previous zoom image, not screen positions.
-    if (tool_name == "vnc_click_zoom") {
-        const int clicks = num("clicks", 1);
-        std::string label = "Click " + str("button", "left");
-        if (clicks > 1) label += " x" + std::to_string(clicks);
-        return label + " in zoom " + point("x", "y");
     }
 
     if (tool_name == "vnc_move") return "Move to " + point("x", "y");
