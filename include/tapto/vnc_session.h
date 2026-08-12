@@ -121,16 +121,39 @@ public:
     // them stays readable. The point is that a position can then be read off
     // the image instead of estimated, and read in the same coordinate system
     // every other tool uses.
+    //
+    // `gridStep` fixes the spacing between labelled lines, in screen pixels.
+    // Zero picks a spacing from the region's size, which is what a zoom wants:
+    // the region varies, and the grid should stay about as fine relative to it.
+    // A fixed step is for the full screen, where the size never changes and a
+    // predictable grid is worth more than an adaptive one.
     std::vector<uint8_t> screenshotRegionPng(Rect& region, int scale = 1,
                                              const Marker* marker = nullptr,
-                                             bool rulers = false) const;
+                                             bool rulers = false,
+                                             int gridStep = 0) const;
+
+    // Digit size the rulers are drawn at, as a multiple of the 5x7 font.
+    //
+    // Larger on an unenlarged image, because that is the case where the whole
+    // picture is about to be shrunk hardest: a vision model resizes a
+    // screenshot to a fixed size regardless of what it started at, so a full
+    // 1900px-wide screen loses more than half its width while a 3x zoom of a
+    // 320px region loses none. Digits that survive one do not survive the
+    // other.
+    static constexpr int rulerGlyphScale(int scale) { return scale >= 2 ? 2 : 3; }
 
     // Output pixels the rulers occupy along the left and top edges when
-    // `rulers` is set. Content therefore starts at (kRulerMarginLeft,
-    // kRulerMarginTop), which is what a caller needs to state the mapping from
-    // image pixels back to screen coordinates.
-    static constexpr int kRulerMarginLeft = 54;
-    static constexpr int kRulerMarginTop  = 19;
+    // `rulers` is set: room for a four-digit label plus padding. Content
+    // therefore starts at (rulerMarginLeft(scale), rulerMarginTop(scale)),
+    // which is what a caller needs to state the mapping from image pixels back
+    // to screen coordinates. The 6 and 7 are the font's advance and height;
+    // the rendering code static_asserts that they still match.
+    static constexpr int rulerMarginLeft(int scale) {
+        return rulerGlyphScale(scale) * 6 * 4 + 6;
+    }
+    static constexpr int rulerMarginTop(int scale) {
+        return rulerGlyphScale(scale) * 7 + 5;
+    }
 
     // Human-readable account of the negotiated pixel format and what has
     // actually reached the composite. A framebuffer update arriving does not

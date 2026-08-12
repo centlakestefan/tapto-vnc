@@ -155,11 +155,18 @@ at (750, 660).
 
 **If you change the grid code, keep the two axes at the same resolution.**
 
+The same reasoning applies to a line that carries no number. Where ticks fall
+too close together to label every one, the unlabelled ones are drawn at half
+strength — otherwise finding "the line after 300" means counting identical
+lines, and a miscount is a whole grid step of error. Only a numbered line is
+drawn at full strength.
+
 ## Design rules, and where they live in the code
 
 | rule | enforced by |
 | --- | --- |
 | Grid resolution equal on both axes | `minorStep` in `screenshotRegionPng()` |
+| Only a numbered line is drawn at full strength | `labelled ? 2 : 1` blend weight |
 | Region at most 640x200 | `kMaxZoomWidth` / `kMaxZoomHeight`, clamped and reported |
 | Never returned at less than 2x | `kMinZoomScale` |
 | Default region 320x100 | `doZoom()` |
@@ -205,6 +212,52 @@ and Install on the next occupy nearly the same pixels: one successful run
 clicked the identical coordinate three times, correctly, on three consecutive
 pages. The repeat-click warning is therefore exact-match only, and catches
 less than it could on purpose.
+
+## Rulers on the full screenshot — open
+
+`--grid <px>` (config key `screenshot-grid`, `0` by default) puts the same
+rulers and grid on the ordinary screenshots every tool returns, at a fixed
+spacing rather than one chosen from the region size. `--grid 50` is the
+spacing worth trying first.
+
+It is off by default because it is not yet known to help, and it is not
+obvious either way:
+
+- **For it.** The zoom's rulers work, and nothing about the mechanism is
+  specific to an enlarged image. Some misses are not identification failures at
+  all — the model can see the button perfectly well and still reports a
+  coordinate 80 px off. A ruler fixes that class directly, and on the frame the
+  model already has, without a round trip.
+- **Against it.** A full screenshot is where the vision tower's downscaling
+  bites hardest. A 1904 px-wide screen is resized to about 896, so the labels
+  are least legible exactly where the picture is least detailed — which is why
+  the digits are drawn 3x rather than 2x at 1:1 (`rulerGlyphScale`). And a
+  grid at 50 px crosses every piece of text on the screen; the lines are
+  half-blended so text survives them at full resolution, but "survives at full
+  resolution" is not the condition that matters.
+
+**Look at it before running it.** `vnc-smoketest --grid 50` writes the same
+render with no model involved:
+
+```sh
+vnc-smoketest --vcenter <host> --vm <name> --grid 50 --out grid.png
+```
+
+Open it, then shrink it to 896 px wide and look again — that second view is
+closer to what the model gets.
+
+**What would settle it.** The placement test below, run twice on the same
+target with `--grid 50` and without, comparing the error of a click made from
+the full screenshot alone. If gridding helps, the interesting follow-up is
+whether it reduces how often a model needs to zoom at all, which is where the
+wall-clock saving would be.
+
+**What it cannot do.** A grid adds no detail. It tells the model where
+something is, not what it is — so it does nothing for picking one row of a file
+list out of five, and the zoom-to-identify rule stands unchanged. Both the
+system prompt and the tool description say so when the grid is on, because a
+model handed a measuring instrument will otherwise assume it has been handed a
+better picture.
 
 ## The design this replaced
 

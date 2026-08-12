@@ -50,4 +50,19 @@ VncSession& sessionFrom(Context& context);
 void setRequireZoom(bool require);
 bool requireZoom();
 
+// Gridline spacing, in screen pixels, for the full screenshots every tool
+// returns. Zero — the default — leaves them plain.
+//
+// The zoom's rulers are known to work. Whether the same trick pays at 1:1 is
+// open: a full screenshot is where a vision model's downscaling bites hardest,
+// so the labels are least legible exactly where the picture is least detailed,
+// and the gridlines cross every piece of text on the screen. Hence a setting
+// to be measured rather than a default, and hence the spacing being the
+// caller's choice.
+//
+// Call before makeComputerTools(): vnc_screenshot's description changes with
+// it, since a grid nobody explains is just something to reason about.
+void setScreenshotGrid(int step);
+int  screenshotGrid();
+
 }  // namespace tapto

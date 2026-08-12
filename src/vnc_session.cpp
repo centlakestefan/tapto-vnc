@@ -485,7 +485,7 @@ void drawDot(std::vector<uint8_t>& rgb, int width, int height, int cx, int cy, i
 
 std::vector<uint8_t> VncSession::screenshotRegionPng(Rect& region, int scale,
                                                      const Marker* marker,
-                                                     bool rulers) const {
+                                                     bool rulers, int gridStep) const {
     const Impl& impl = *m_impl;
     if (impl.width <= 0 || impl.height <= 0) return {};
 
@@ -502,15 +502,15 @@ std::vector<uint8_t> VncSession::screenshotRegionPng(Rect& region, int scale,
     region.height = std::min(region.height, impl.height - region.y);
     if (region.width <= 0 || region.height <= 0) return {};
 
-    constexpr int kGlyphScale = 2;
-    // Room for a four-digit label plus padding. The rulers sit in this margin
-    // rather than on the picture, so nothing they draw can hide content.
-    // Published as kRulerMargin* so a caller can state the image-to-screen
-    // mapping; keep the two in step.
-    static_assert(kRulerMarginLeft == kGlyphAdvance * kGlyphScale * 4 + 6, "margin drifted");
-    static_assert(kRulerMarginTop == kGlyphHeight * kGlyphScale + 5, "margin drifted");
-    const int marginLeft = rulers ? kRulerMarginLeft : 0;
-    const int marginTop  = rulers ? kRulerMarginTop : 0;
+    const int glyphScale = rulerGlyphScale(scale);
+    // The rulers sit in a margin rather than on the picture, so nothing they
+    // draw can hide content. rulerMargin*() publishes the size so a caller can
+    // state the image-to-screen mapping; these assert the font metrics it
+    // assumes are still the font's.
+    static_assert(kGlyphAdvance == 6, "rulerMarginLeft() assumes a 6px advance");
+    static_assert(kGlyphHeight == 7, "rulerMarginTop() assumes a 7px glyph");
+    const int marginLeft = rulers ? rulerMarginLeft(scale) : 0;
+    const int marginTop  = rulers ? rulerMarginTop(scale) : 0;
 
     const rfb::PixelFormat& fmt = impl.info.pixelFormat;
     const int contentWidth  = region.width  * scale;
@@ -546,11 +546,18 @@ std::vector<uint8_t> VncSession::screenshotRegionPng(Rect& region, int scale,
 
     if (rulers) {
         constexpr uint8_t kGridR = 255, kGridG = 0, kGridB = 255;  // magenta
-        const int stepX = niceStep(region.width);
-        const int stepY = niceStep(region.height);
+        // An explicit step applies to both axes, which makes the equal-
+        // resolution rule below hold by construction and leaves nothing for
+        // the subdivisions to add.
+        const int stepX = gridStep > 0 ? gridStep : niceStep(region.width);
+        const int stepY = gridStep > 0 ? gridStep : niceStep(region.height);
+
         // Skip every other label where ticks fall too close to print one.
-        const int labelEveryX = stepX * scale < 60 ? 2 : 1;
-        const int labelEveryY = stepY * scale < 22 ? 2 : 1;
+        // Measured against the label itself rather than a fixed number of
+        // pixels, since the digits are bigger on an unenlarged image.
+        const int labelWidth = kGlyphAdvance * glyphScale * 4;  // four digits
+        const int labelEveryX = stepX * scale < labelWidth + 8 ? 2 : 1;
+        const int labelEveryY = stepY * scale < kGlyphHeight * glyphScale + 8 ? 2 : 1;
 
         // Subdivisions, at the finer of the two axes' steps and applied to
         // both. Without these a wide, short region gets a grid several times
@@ -559,7 +566,9 @@ std::vector<uint8_t> VncSession::screenshotRegionPng(Rect& region, int scale,
         // that misses. Measured: a checkbox in a 400x100 region, gridded every
         // 10px vertically and 50px horizontally, was located to the exact
         // pixel in y and missed by 75-103px in x, twice.
-        const int minorStep = niceStep(std::min(region.width, region.height));
+        const int minorStep = gridStep > 0
+                                  ? gridStep
+                                  : niceStep(std::min(region.width, region.height));
 
         if (minorStep < stepX) {
             for (int sx = ((region.x + minorStep - 1) / minorStep) * minorStep;
@@ -588,37 +597,46 @@ std::vector<uint8_t> VncSession::screenshotRegionPng(Rect& region, int scale,
             }
         }
 
+        // A line is drawn strongly only if it carries a number. Where ticks fall
+        // too close together to label every one, the unlabelled ones would
+        // otherwise be indistinguishable from their neighbours, and counting
+        // gridlines to find "the one after 300" is exactly how a reading ends
+        // up one whole step out.
         for (int sx = ((region.x + stepX - 1) / stepX) * stepX;
              sx < region.x + region.width; sx += stepX) {
             const int cx = marginLeft + (sx - region.x) * scale;
+            const bool labelled = (sx / stepX) % labelEveryX == 0;
             for (int y = marginTop; y < outHeight; ++y) {
-                blendPixel(rgb, outWidth, outHeight, cx, y, kGridR, kGridG, kGridB, 2);
+                blendPixel(rgb, outWidth, outHeight, cx, y,
+                           kGridR, kGridG, kGridB, labelled ? 2 : 1);
             }
-            for (int y = marginTop - 4; y < marginTop; ++y) {
+            for (int y = marginTop - (labelled ? 4 : 2); y < marginTop; ++y) {
                 setPixel(rgb, outWidth, outHeight, cx, y, 90, 90, 90);
             }
-            if ((sx / stepX) % labelEveryX == 0) {
+            if (labelled) {
                 // Clamped to the content edge, not to 0: a label centred on the
                 // leftmost gridline would otherwise print over the left ruler.
-                int labelX = cx - numberWidth(sx, kGlyphScale) / 2;
+                int labelX = cx - numberWidth(sx, glyphScale) / 2;
                 if (labelX < marginLeft) labelX = marginLeft;
-                drawNumber(rgb, outWidth, outHeight, labelX, 2, sx, kGlyphScale);
+                drawNumber(rgb, outWidth, outHeight, labelX, 2, sx, glyphScale);
             }
         }
 
         for (int sy = ((region.y + stepY - 1) / stepY) * stepY;
              sy < region.y + region.height; sy += stepY) {
             const int cy = marginTop + (sy - region.y) * scale;
+            const bool labelled = (sy / stepY) % labelEveryY == 0;
             for (int x = marginLeft; x < outWidth; ++x) {
-                blendPixel(rgb, outWidth, outHeight, x, cy, kGridR, kGridG, kGridB, 2);
+                blendPixel(rgb, outWidth, outHeight, x, cy,
+                           kGridR, kGridG, kGridB, labelled ? 2 : 1);
             }
-            for (int x = marginLeft - 4; x < marginLeft; ++x) {
+            for (int x = marginLeft - (labelled ? 4 : 2); x < marginLeft; ++x) {
                 setPixel(rgb, outWidth, outHeight, x, cy, 90, 90, 90);
             }
-            if ((sy / stepY) % labelEveryY == 0) {
+            if (labelled) {
                 drawNumber(rgb, outWidth, outHeight,
-                           marginLeft - numberWidth(sy, kGlyphScale) - 5,
-                           cy - kGlyphHeight * kGlyphScale / 2, sy, kGlyphScale);
+                           marginLeft - numberWidth(sy, glyphScale) - 5,
+                           cy - kGlyphHeight * glyphScale / 2, sy, glyphScale);
             }
         }
     }

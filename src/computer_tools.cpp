@@ -154,6 +154,24 @@ ZoomView g_lastZoom;
 // and has ignored it at least once.
 bool g_requireZoom = false;
 
+// Gridline spacing, in screen pixels, for the full screenshots — 0 leaves them
+// plain, which is the default.
+//
+// The zoom's rulers work because reading a labelled line is easier than
+// estimating a fraction of an image. Whether the same holds at 1:1 is a
+// separate question, and not an obvious one: a full screenshot is where the
+// vision tower's downscaling bites hardest, so the labels are at their least
+// legible exactly where the picture is at its least detailed. A grid also adds
+// lines across every piece of text on the screen.
+//
+// So it is off unless asked for, and the value is the experiment's parameter
+// rather than a constant.
+int g_screenshotGrid = 0;
+
+// Whether a full screenshot carries rulers. Reads better at the call sites
+// than comparing the pixel value to zero.
+bool gridOn() { return g_screenshotGrid > 0; }
+
 // Captures the screen and parks it for the backend to deliver.
 //
 // `marker`, when set, puts a dot at that point in the copy written to disk —
@@ -172,24 +190,46 @@ std::string captureInto(Context& context, VncSession& session, const std::string
     g_lastZoom.fresh = false;
 
     ToolImage shot;
-    shot.png = session.screenshotPng();
-    shot.width = session.width();
-    shot.height = session.height();
+    if (gridOn()) {
+        VncSession::Rect whole;
+        shot.png = session.screenshotRegionPng(whole, 1, nullptr, true, g_screenshotGrid);
+        // Margins included: the rulers are part of the image, and a size that
+        // omitted them would describe a picture nobody is looking at.
+        shot.width  = VncSession::rulerMarginLeft(1) + session.width();
+        shot.height = VncSession::rulerMarginTop(1)  + session.height();
+    } else {
+        shot.png = session.screenshotPng();
+        shot.width  = session.width();
+        shot.height = session.height();
+    }
     shot.label = label;
 
     if (marker && context.has(keys::kScreenshotDir)) {
         // Rendered a second time rather than drawn onto shot.png, which is
         // already PNG-encoded. Only pays that cost when saving is switched on.
+        // Gridded to match what the model saw, so a frame on disk and the frame
+        // it reasoned about are the same picture apart from the dot.
         VncSession::Rect whole;
-        saveScreenshot(context, session.screenshotRegionPng(whole, 1, marker), label);
+        saveScreenshot(context,
+                       session.screenshotRegionPng(whole, 1, marker, gridOn(), g_screenshotGrid),
+                       label);
     } else {
         saveScreenshot(context, shot.png, label);
     }
     putToolImage(context, shot);
 
     std::ostringstream out;
-    out << label << ". The screen is " << shot.width << "x" << shot.height
+    // The screen's size, not the image's: this is the number the model needs
+    // for a coordinate, and with rulers on the two differ by the margins.
+    out << label << ". The screen is " << session.width() << "x" << session.height()
         << " pixels; the attached screenshot shows its current state.";
+    if (gridOn()) {
+        out << " It is ruled and gridded every " << g_screenshotGrid
+            << " pixels in screen coordinates, the same ones vnc_click takes — read a "
+               "position off the rulers rather than judging it. The grid does not make "
+               "the picture any sharper, so use vnc_zoom when you need to tell similar "
+               "things apart.";
+    }
     if (!ok) out << " (warning: the server sent no framebuffer update, so this may be stale)";
     return out.str();
 }
@@ -439,8 +479,8 @@ std::string doZoom(Context& context, const json& input) {
     shot.png    = std::move(png);
     // The rendered image is the enlarged region plus the ruler margins, so
     // these are the PNG's real dimensions rather than the region's.
-    shot.width  = VncSession::kRulerMarginLeft + region.width  * scale;
-    shot.height = VncSession::kRulerMarginTop  + region.height * scale;
+    shot.width  = VncSession::rulerMarginLeft(scale) + region.width  * scale;
+    shot.height = VncSession::rulerMarginTop(scale)  + region.height * scale;
     shot.label  = label.str();
     saveScreenshot(context, shot.png, shot.label);
     putToolImage(context, shot);
@@ -458,9 +498,9 @@ std::string doZoom(Context& context, const json& input) {
            "image's own pixels — the image is larger than the region it shows "
            "and starts at its top-left corner, so those numbers are much too "
            "big. If you have measured something that way, convert it first: "
-        << "screen_x = " << region.x << " + (image_x - " << VncSession::kRulerMarginLeft
+        << "screen_x = " << region.x << " + (image_x - " << VncSession::rulerMarginLeft(scale)
         << ") / " << scale
-        << ", screen_y = " << region.y << " + (image_y - " << VncSession::kRulerMarginTop
+        << ", screen_y = " << region.y << " + (image_y - " << VncSession::rulerMarginTop(scale)
         << ") / " << scale << ".";
     if (!capped.empty()) {
         out << " NOTE: the " << capped << " you asked for was larger than a zoom allows "
@@ -648,6 +688,9 @@ json objectSchema(json properties, std::vector<std::string> required) {
 void setRequireZoom(bool require) { g_requireZoom = require; }
 bool requireZoom() { return g_requireZoom; }
 
+void setScreenshotGrid(int step) { g_screenshotGrid = step > 0 ? step : 0; }
+int  screenshotGrid() { return g_screenshotGrid; }
+
 VncSession& sessionFrom(Context& context) {
     return *context.get<VncSession*>(keys::kSession);
 }
@@ -655,12 +698,25 @@ VncSession& sessionFrom(Context& context) {
 std::vector<ToolSpec> makeComputerTools() {
     std::vector<ToolSpec> tools;
 
-    tools.push_back(ToolSpec{
-        "vnc_screenshot",
-        "Take a screenshot of the remote screen. Use this to see the current state "
-        "before deciding what to do, or to confirm the result of an earlier action.",
-        objectSchema(json::object(), {}),
-        doScreenshot, ""});
+    {
+        std::string description =
+            "Take a screenshot of the remote screen. Use this to see the current state "
+            "before deciding what to do, or to confirm the result of an earlier action.";
+        if (gridOn()) {
+            description +=
+                "\nThe screenshot carries a numbered ruler along its top and left edges "
+                "and a grid drawn every " + std::to_string(g_screenshotGrid) +
+                " pixels, labelled in screen coordinates — the same ones vnc_click "
+                "takes. Use it to read a position rather than estimate one.\n"
+                "It shows you where things are, not what they are: the whole screen "
+                "still has to fit into one image, so anything small stays hard to "
+                "identify however finely it is gridded. Zoom before clicking something "
+                "you could confuse with its neighbour.";
+        }
+        tools.push_back(ToolSpec{
+            "vnc_screenshot", description, objectSchema(json::object(), {}),
+            doScreenshot, ""});
+    }
 
     {
         json props = coordinateSchema((std::string("Horizontal pixel coordinate, 0 at the left edge") + kPixelNote).c_str(),

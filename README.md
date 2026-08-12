@@ -237,6 +237,7 @@ The store is shared with `tapto-code`, which can write it for you:
 | `--screenshots <dir>` | save every frame, with a red dot marking where each click aimed |
 | `--trace <path>` | request/response diagnostics, including cache usage |
 | `--require-zoom on` | refuse a click unless a zoom containing it came first — for weaker models |
+| `--grid 50` | rule and grid the full screenshots too, every 50 px — an experiment, off by default |
 | `--resolution 1280x1024` | set the guest's screen size before connecting |
 | `--thinking on\|off` | ask the model to reason before acting |
 | `--layout <name>` | keyboard layout of the remote machine |

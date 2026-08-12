@@ -41,6 +41,9 @@ void usage(const char* argv0) {
         << "                      e.g. raw | hextile | zrle,hextile,raw\n"
         << "  --zoom <x,y,w,h>    Also write <out>.zoom.png: that region only,\n"
         << "                      enlarged, exactly as the vnc_zoom tool renders it\n"
+        << "  --grid <px>         Rule and grid <out> every <px> screen pixels, as\n"
+        << "                      tapto-vnc --grid does. Use it to see whether the\n"
+        << "                      labels stay readable before spending a run on it.\n"
         << "  -v, --verbose       Log each connection step\n"
         << "  --wake              Nudge the console first, to dismiss a blank\n"
         << "                      screen saver before capturing\n"
@@ -75,6 +78,7 @@ int main(int argc, char** argv) {
     bool wake = false;
     std::string encodings;
     std::string zoom;
+    int gridStep = 0;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -93,6 +97,7 @@ int main(int argc, char** argv) {
         if (const char* v = option(argc, argv, i, "--user"))     { vcenter.username = v; continue; }
         if (const char* v = option(argc, argv, i, "--encodings")) { encodings = v; continue; }
         if (const char* v = option(argc, argv, i, "--zoom"))      { zoom = v; continue; }
+        if (const char* v = option(argc, argv, i, "--grid"))      { gridStep = std::atoi(v); continue; }
         if (const char* v = option(argc, argv, i, "--out"))      { out = v; continue; }
         if (const char* v = option(argc, argv, i, "--timeout"))  { timeoutMs = std::atoi(v); continue; }
         if (const char* v = option(argc, argv, i, "--settle"))   { settleMs = std::atoi(v); continue; }
@@ -177,12 +182,27 @@ int main(int argc, char** argv) {
 
         if (verbose) std::cout << "\n" << session.diagnostics() << "\n";
 
-        if (!session.writePng(out)) {
+        if (gridStep > 0) {
+            // The whole screen at 1:1, ruled — the same render the agent's
+            // screenshots get under --grid, so this is a faithful preview.
+            tapto::VncSession::Rect whole;
+            const std::vector<uint8_t> png =
+                session.screenshotRegionPng(whole, 1, nullptr, true, gridStep);
+            FILE* file = png.empty() ? nullptr : std::fopen(out.c_str(), "wb");
+            if (!file) {
+                std::cerr << "ERROR: failed to write " << out << "\n";
+                return 1;
+            }
+            std::fwrite(png.data(), 1, png.size(), file);
+            std::fclose(file);
+        } else if (!session.writePng(out)) {
             std::cerr << "ERROR: failed to write " << out << "\n";
             return 1;
         }
 
-        std::cout << "Wrote " << out << " (" << session.width() << "x" << session.height() << ")\n";
+        std::cout << "Wrote " << out << " (" << session.width() << "x" << session.height() << ")";
+        if (gridStep > 0) std::cout << ", gridded every " << gridStep << "px";
+        std::cout << "\n";
 
         if (!zoom.empty()) {
             tapto::VncSession::Rect region;

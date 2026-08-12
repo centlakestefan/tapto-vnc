@@ -191,7 +191,24 @@ How to work:
 - Take a screenshot first if you don't already have a current one. Never act on an assumption about what is on screen.
 - Look at what the screenshot actually shows before deciding. Read window titles, button labels and field contents rather than relying on where things usually are.
 - There is one coordinate system: actual pixels of the whole screen, (0,0) at the top left. Every tool uses it. Never give a normalised 0-1000 or 0-1 fraction.
-- A full screenshot has to show the whole screen at once, so small or tightly packed things — rows in a file list, items in a menu, buttons along the bottom of a dialog — are hard to tell apart and easy to misjudge. Do not estimate their position from the full screenshot. Use vnc_zoom on the area around them instead: it returns that area enlarged, with a numbered ruler along the top and left edge and a grid drawn from it, all labelled in screen coordinates.
+)";
+
+// Spliced into the prompt above when --grid is on, which is why that literal
+// is in two pieces. It belongs at this point in the list, right after the
+// coordinate system it describes and before the advice about zooming, which it
+// qualifies but does not replace.
+const char* kGridGuidance =
+    "- Screenshots are ruled along the top and left edges, with a grid drawn from those "
+    "rulers. The numbers on them are screen coordinates, so you can read a position "
+    "off the picture instead of estimating it: find the gridlines that bracket what you "
+    "want and read their labels.\n"
+    "- The grid tells you where something is, not what it is. It adds no detail to the "
+    "picture — the whole screen still has to fit into one image — so it does not help "
+    "you tell one row of a list from the next, or read a small label, or see whether a "
+    "box is ticked. For that you still need vnc_zoom, and the paragraphs below still "
+    "apply.\n";
+
+const char* kSystemPromptRest = R"(- A full screenshot has to show the whole screen at once, so small or tightly packed things — rows in a file list, items in a menu, buttons along the bottom of a dialog — are hard to tell apart and easy to misjudge. Do not estimate their position from the full screenshot. Use vnc_zoom on the area around them instead: it returns that area enlarged, with a numbered ruler along the top and left edge and a grid drawn from it, all labelled in screen coordinates.
 - Read the target's position off that grid rather than judging it. Find which gridlines bracket the thing you want, read their numbers from the rulers, and give that position to vnc_click. This is reading, not estimating — if you find yourself guessing a coordinate, zoom in closer instead, because a smaller region means a finer grid.
 - If a click lands in the wrong place, do not adjust it by guesswork and do not repeat it. Zoom in tighter on the target and read its coordinates again.
 - Zooming is not only about aiming, it is also how you make sure you have the right thing. Neighbouring entries in a list often have names that differ only slightly — the same word with a version number, a suffix or a different extension — and adjacent rows sit about twenty pixels apart, so opening the wrong one is easy and looks like success afterwards. Zoom in close enough to read the whole row rather than a name alone: the other columns, such as type and size, are usually what tells two similar entries apart. Confirm you have the right one before you open it.
@@ -275,6 +292,13 @@ void usage(const char* argv0) {
         << "                      that region. Stops a model guessing positions\n"
         << "                      from a full screenshot; costs one extra step per\n"
         << "                      click. Worth it for local models.\n"
+        << "  --grid <px>         Rule and grid the full screenshots every <px>\n"
+        << "                      screen pixels, labelled in screen coordinates\n"
+        << "                      (config key screenshot-grid; 0/off by default,\n"
+        << "                      10..500 otherwise). vnc_zoom is always ruled;\n"
+        << "                      this is the same idea applied at 1:1, where it\n"
+        << "                      is not yet known to help — measure before\n"
+        << "                      trusting it.\n"
         << "  --layout <name>     Keyboard layout of the REMOTE machine\n"
         << "                      (config key keyboard-layout; default us)\n"
         << "  --altcode <mode>    on|off|auto — Alt+numpad fallback for characters\n"
@@ -383,7 +407,7 @@ int main(int argc, char** argv) {
     tapto::VCenterCredentials vcenter;
     // Left empty so config can supply them; CLI flags win when present.
     std::string vmName, model, effort, trace, task, provider, layout, typeTest, altcode, color,
-                screenshotDir, providerUrl, resolution, thinking, requireZoom;
+                screenshotDir, providerUrl, resolution, thinking, requireZoom, grid;
     int maxSteps = 0;
     int resolutionWidth = 0, resolutionHeight = 0;
     bool quiet = false;
@@ -422,6 +446,7 @@ int main(int argc, char** argv) {
         if (const char* v = option(argc, argv, i, "--effort"))    { effort = v; continue; }
         if (const char* v = option(argc, argv, i, "--thinking"))  { thinking = v; continue; }
         if (const char* v = option(argc, argv, i, "--require-zoom")) { requireZoom = v; continue; }
+        if (const char* v = option(argc, argv, i, "--grid"))      { grid = v; continue; }
         if (const char* v = option(argc, argv, i, "--max-steps")) { maxSteps = std::atoi(v); continue; }
         if (const char* v = option(argc, argv, i, "--trace"))     { trace = v; continue; }
         if (!arg.empty() && arg[0] == '-') {
@@ -569,6 +594,24 @@ int main(int argc, char** argv) {
         return 2;
     }
     tapto::setRequireZoom(requireZoom == "on");
+
+    // Must land before makeComputerTools(): vnc_screenshot's description
+    // explains the grid, so it has to know whether there is one.
+    if (grid.empty()) grid = settings.valueOr("screenshot-grid", "0");
+    if (grid == "off") grid = "0";
+    int gridStep = 0;
+    try { gridStep = std::stoi(grid); }
+    catch (const std::exception&) {
+        std::cerr << "ERROR: --grid expects a number of pixels, or off\n";
+        return 2;
+    }
+    // A grid finer than this is unreadable once the screenshot is downscaled
+    // for the model, and one coarser than the screen is not a grid.
+    if (gridStep != 0 && (gridStep < 10 || gridStep > 500)) {
+        std::cerr << "ERROR: --grid expects 0 (off) or 10..500 pixels\n";
+        return 2;
+    }
+    tapto::setScreenshotGrid(gridStep);
 
     if (thinking.empty()) thinking = settings.valueOr("thinking", "default");
     if (thinking != "on" && thinking != "off" && thinking != "default") {
@@ -766,7 +809,12 @@ int main(int argc, char** argv) {
         if (thinking == "on")       client->setThinkingBudget(1);
         else if (thinking == "off") client->setThinkingBudget(0);
 
-        client->setSystemPrompt(kSystemPrompt);
+        // Spliced rather than always present: telling a model to read rulers
+        // that are not in the picture is worse than saying nothing at all.
+        std::string systemPrompt = kSystemPrompt;
+        if (tapto::screenshotGrid() > 0) systemPrompt += kGridGuidance;
+        systemPrompt += kSystemPromptRest;
+        client->setSystemPrompt(systemPrompt);
         client->start();
 
         auto runTurn = [&](const std::string& message) {
