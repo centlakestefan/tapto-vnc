@@ -621,6 +621,19 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
         }
     }
 
+    // The closing message never passes through the loop above, because the loop
+    // exits precisely when a message arrives without tool calls — so the one
+    // thing missing from the trace was the model's summary of what it had just
+    // done, which is the part a human reads first. Logged here rather than at
+    // the top of the loop so it also covers a turn stopped by the iteration
+    // cap, whose message never reached the loop body either.
+    {
+        const std::string cot = extractReasoning(message);
+        if (!cot.empty()) mclog("Assistant CoT: " + cot + "\n");
+        const std::string text = extractContent(message);
+        if (!text.empty()) mclog("Assistant text: " + text + "\n");
+    }
+
     mclog("=== Final Response === " + choice.value("finish_reason", "unknown") + "\n");
 
     ui::end_status();

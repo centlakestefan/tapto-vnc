@@ -590,6 +590,23 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
         m_conversation_history.push_back({{"role", "user"}, {"content", tool_results}});
     }
 
+    // The closing message never passes through the loop above, because the loop
+    // exits precisely when a message arrives without a tool_use block — so the
+    // one thing missing from the trace was the model's summary of what it had
+    // just done, which is the part a human reads first. Logged here rather than
+    // at the top of the loop so it also covers a turn stopped by the iteration
+    // cap, whose message never reached the loop body either.
+    for (const auto& block : response["content"]) {
+        const std::string type = block.value("type", std::string());
+        if (type == "thinking") {
+            const std::string cot = block.value("thinking", std::string());
+            if (!cot.empty()) mclog("assistant thinks: " + cot + "\n");
+        } else if (type == "text") {
+            const std::string text = block.value("text", std::string());
+            if (!text.empty()) mclog("assistant says: " + text + "\n");
+        }
+    }
+
     mclog("=== Final Response === " + response.value("stop_reason", std::string("unknown")) + "\n");
 
     ui::end_status();
