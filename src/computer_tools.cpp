@@ -234,42 +234,28 @@ std::string captureInto(Context& context, VncSession& session, const std::string
     return out.str();
 }
 
-// Bounds on a zoom region, enforced rather than merely asked for.
+// One zoom, always the same. The model says where to look; it does not say how
+// much or how close.
 //
-// A zoom is for aiming; vnc_screenshot is for surveying. Measurement showed
-// aiming error grows with the region's height, and a run that was told to keep
-// regions short chose 400, then 300, then 200 and missed with all three before
-// succeeding at 100. Guidance a model can decline is not a mechanism.
+// The sizes are the ones the old adjustable version defaulted to, kept because
+// they were measured: aiming error in a zoomed view grows with the region's
+// height, and 100px keeps it inside a single ~21px list row. 320 across at 3x
+// puts the long side at 960, near the 896 the vision tower resizes to — past
+// that, enlarging buys nothing, and short of it the crop wastes budget.
+// Enlarging is otherwise free, since an image costs a fixed number of tokens
+// whatever its size.
 //
-// kMinZoomScale exists for the same reason: a 600px-wide region worked out to
-// 1x under the old rule, so the model asked for a zoom and was handed the
-// region at original size — a crop wearing the name of a zoom.
-constexpr int kMaxZoomWidth  = 640;
-constexpr int kMaxZoomHeight = 200;
-constexpr int kMinZoomWidth  = 240;
-constexpr int kMinZoomHeight = 80;
-constexpr int kMinZoomScale  = 2;
-
-// Enlargement for a requested region: enough to be worth looking at, without
-// producing an image so large it costs more tokens than it repays.
-//
-// Vision models compress every image to a fixed token budget regardless of its
-// size, so what a crop buys is *effective resolution* — the region fills the
-// whole budget instead of a corner of it. The enlargement itself is what makes
-// that legible rather than blocky.
-int zoomScaleFor(int width, int height) {
-    // 896 is the side the vision tower resizes to, so enlarging past it buys
-    // nothing. Enlarging costs no extra tokens — an image is compressed to a
-    // fixed token budget whatever its size — so there is no reason to stop
-    // short of it either.
-    constexpr int kTargetLongestSide = 896;
-    const int longest = std::max(width, height);
-    if (longest <= 0) return kMinZoomScale;
-    // Rounded, not truncated: flooring 1.9 to 1 hands back the region at
-    // original size, which is no help at all.
-    const int scale = (kTargetLongestSide + longest / 2) / longest;
-    return scale < kMinZoomScale ? kMinZoomScale : (scale > 4 ? 4 : scale);
-}
+// Making them constants rather than defaults is the point of the change.
+// Adjustable, they were not used: across one 17-zoom run the model asked for
+// eleven different rectangles, converged on roughly this one by itself, and
+// spent four of those calls being clamped up from something too small to
+// contain its target. What that cost was a ruler whose spacing changed with
+// every call — niceStep() runs on whatever rectangle arrives — so the model
+// had to work out the pitch afresh each time, and demonstrably got it wrong.
+// Fixed, the ruler is identical in every zoom the model will ever see.
+constexpr int kZoomWidth  = 320;
+constexpr int kZoomHeight = 100;
+constexpr int kZoomScale  = 3;
 
 // Holds a reported coordinate pair inside the framebuffer.
 //
@@ -344,8 +330,8 @@ bool noteClick(int x, int y) {
 
 constexpr const char* kRepeatClickNote =
     " NOTE: this is the same point you clicked last time. If that did not have the "
-    "effect you wanted, clicking it again will not either. Zoom in on a short region "
-    "centred on your target and look at where it actually is before clicking again.";
+    "effect you wanted, clicking it again will not either. Zoom on your target and look "
+    "at where it actually is before clicking again.";
 
 // Delivers a click at an already-resolved screen coordinate. Returns an error
 // message, or empty on success.
@@ -385,8 +371,9 @@ std::string zoomGateFor(int x, int y) {
         out << "(" << x << "," << y << ") is outside the area you last zoomed on (x="
             << r.x << ".." << r.x + r.width - 1 << ", y=" << r.y << ".."
             << r.y + r.height - 1 << "), so you have not actually looked at that point. "
-            << "Zoom on the area around it first. If your target was not in the last "
-            << "zoom, widen the region rather than clicking past its edge.";
+            << "Zoom on it first. If your target was not in the last zoom, zoom again "
+            << "centred on where it actually is, rather than clicking past the edge of "
+            << "what you looked at.";
         return out.str();
     }
     return "";
@@ -421,66 +408,53 @@ std::string doClick(Context& context, const json& input) {
 std::string doZoom(Context& context, const json& input) {
     VncSession& session = sessionFrom(context);
 
-    VncSession::Rect region;
-    const std::string missing = requirePoint(input, "x", "y", region.x, region.y);
+    int centreX = 0, centreY = 0;
+    const std::string missing = requirePoint(input, "x", "y", centreX, centreY);
     if (!missing.empty()) {
         return "ERROR: " + missing +
-               " They are the top-left corner of the region you want to look at; without "
-               "them there is nothing to zoom on.";
+               " They are the point you want to look at, and the view is centred on "
+               "them; without them there is nothing to zoom on.";
     }
-    // Defaults chosen from measurement, not taste. Aiming error in a zoomed
-    // view scales with the region's height and with the target's distance from
-    // the region's centre — measured against one local model, a target on the
-    // centre line came back within a pixel, one at 0.06 of the height was off
-    // by 9, and the same target in a 256px region was off by 26. What a crop
-    // buys in accuracy therefore comes from being short, not from being
-    // magnified. 100px keeps the error inside a single ~21px list row.
-    region.width  = intField(input, "width", 320);
-    region.height = intField(input, "height", 100);
+    clampToScreen(session, centreX, centreY);
 
-    // The region's origin is a screen coordinate like any other.
-    clampToScreen(session, region.x, region.y);
-    // Floors, not suggestions. A run asked repeatedly for 200x64 regions that
-    // did not reach the button it was aiming at, clicked inside them anyway,
-    // and hit empty panel three times running. A crop this small rarely
-    // contains its target plus enough surroundings to confirm it is the right
-    // one, and the cost of being slightly too generous is only grid coarseness.
-    if (region.width  < kMinZoomWidth)  region.width  = kMinZoomWidth;
-    if (region.height < kMinZoomHeight) region.height = kMinZoomHeight;
-
-    std::string capped;
-    if (region.width > kMaxZoomWidth) {
-        region.width = kMaxZoomWidth;
-        capped = "width";
-    }
-    if (region.height > kMaxZoomHeight) {
-        region.height = kMaxZoomHeight;
-        capped = capped.empty() ? "height" : "width and height";
-    }
+    // Centred on the point asked for, then slid back inside the screen — slid,
+    // not shrunk. A region that lost its edge would render at a different size,
+    // and every zoom having the same size is the whole reason this is fixed:
+    // the ruler's spacing is derived from the region, so a smaller region means
+    // a different grid to read.
+    VncSession::Rect region;
+    region.width  = kZoomWidth;
+    region.height = kZoomHeight;
+    region.x = centreX - kZoomWidth  / 2;
+    region.y = centreY - kZoomHeight / 2;
+    if (region.x + region.width  > session.width())  region.x = session.width()  - region.width;
+    if (region.y + region.height > session.height()) region.y = session.height() - region.height;
+    if (region.x < 0) region.x = 0;
+    if (region.y < 0) region.y = 0;
 
     const bool ok = session.capture(kCaptureTimeout, kActionSettle);
 
-    const int scale = zoomScaleFor(region.width, region.height);
     std::vector<uint8_t> png =
-        session.screenshotRegionPng(region, scale, nullptr, /*rulers=*/true);
+        session.screenshotRegionPng(region, kZoomScale, nullptr, /*rulers=*/true);
     if (png.empty()) return "ERROR: could not render that region of the screen";
 
-    // screenshotRegionPng clamped `region` to the framebuffer, so this records
-    // the rectangle actually rendered rather than the one asked for.
+    // screenshotRegionPng clamps `region` to the framebuffer and writes it
+    // back, so this records what was rendered. It only differs from the above
+    // on a screen smaller than the region itself.
     g_lastZoom.region = region;
     g_lastZoom.fresh  = true;
-    g_lastZoom.scale  = scale;
+    g_lastZoom.scale  = kZoomScale;
 
     std::ostringstream label;
-    label << "Zoomed " << scale << "x on " << region.width << "x" << region.height
+    label << "Zoomed " << kZoomScale << "x on " << region.width << "x" << region.height
           << " at (" << region.x << "," << region.y << ")";
 
     ToolImage shot;
     shot.png    = std::move(png);
     // The rendered image is the enlarged region plus the ruler margins, so
     // these are the PNG's real dimensions rather than the region's.
-    shot.width  = VncSession::rulerMarginLeft(scale) + region.width  * scale;
-    shot.height = VncSession::rulerMarginTop(scale)  + region.height * scale;
+    shot.width  = VncSession::rulerMarginLeft(kZoomScale) + region.width  * kZoomScale;
+    shot.height = VncSession::rulerMarginTop(kZoomScale)  + region.height * kZoomScale;
     shot.label  = label.str();
     saveScreenshot(context, shot.png, shot.label);
     putToolImage(context, shot);
@@ -488,7 +462,12 @@ std::string doZoom(Context& context, const json& input) {
     std::ostringstream out;
     out << "Zoomed view of the screen region x=" << region.x << ".."
         << region.x + region.width - 1 << ", y=" << region.y << ".."
-        << region.y + region.height - 1 << ", enlarged " << scale << "x.";
+        << region.y + region.height - 1 << ", enlarged " << kZoomScale << "x.";
+    if (region.x != centreX - kZoomWidth / 2 || region.y != centreY - kZoomHeight / 2) {
+        out << " That is not quite centred on (" << centreX << "," << centreY
+            << ") because the view would have run off the edge of the screen, so it was "
+               "moved inside; the point you asked about is still in it.";
+    }
     out << " The image has a numbered ruler across the top and down the left "
            "side, and a magenta grid drawn from them. Those numbers are real "
            "screen coordinates, the same ones vnc_click takes. To click "
@@ -498,15 +477,10 @@ std::string doZoom(Context& context, const json& input) {
            "image's own pixels — the image is larger than the region it shows "
            "and starts at its top-left corner, so those numbers are much too "
            "big. If you have measured something that way, convert it first: "
-        << "screen_x = " << region.x << " + (image_x - " << VncSession::rulerMarginLeft(scale)
-        << ") / " << scale
-        << ", screen_y = " << region.y << " + (image_y - " << VncSession::rulerMarginTop(scale)
-        << ") / " << scale << ".";
-    if (!capped.empty()) {
-        out << " NOTE: the " << capped << " you asked for was larger than a zoom allows "
-            << "and was reduced, so this shows less than you requested. A zoom is for "
-            << "aiming at something you have already found; use vnc_screenshot to survey.";
-    }
+        << "screen_x = " << region.x << " + (image_x - "
+        << VncSession::rulerMarginLeft(kZoomScale) << ") / " << kZoomScale
+        << ", screen_y = " << region.y << " + (image_y - "
+        << VncSession::rulerMarginTop(kZoomScale) << ") / " << kZoomScale << ".";
     if (!ok) out << " (warning: the server sent no framebuffer update, so this may be stale)";
     return out.str();
 }
@@ -733,47 +707,33 @@ std::vector<ToolSpec> makeComputerTools() {
     }
 
     {
+        const std::string point =
+            " Give the point you want to look at, not a corner: the view is centred on it.";
         json props = json{
             {"x", {{"type", "integer"},
-                   {"description", "Left edge of the region, in screen pixels"}}},
+                   {"description", "Horizontal screen coordinate to centre the view on." + point}}},
             {"y", {{"type", "integer"},
-                   {"description", "Top edge of the region, in screen pixels"}}},
-            {"width",  {{"type", "integer"}, {"minimum", kMinZoomWidth}, {"maximum", kMaxZoomWidth},
-                        {"description", "Width of the region in screen pixels. Defaults to 320, "
-                                        "maximum 640."}}},
-            {"height", {{"type", "integer"}, {"minimum", kMinZoomHeight}, {"maximum", kMaxZoomHeight},
-                        {"description", "Height of the region in screen pixels. Defaults to 100, "
-                                        "maximum 200. "
-                                        "How precisely you can aim inside the result depends on "
-                                        "this: keep it small — around 100, roughly five rows of a "
-                                        "list — when you need to pick one row out of several. A "
-                                        "tall region is for getting your bearings, not for aiming."}}},
+                   {"description", "Vertical screen coordinate to centre the view on." + point}}},
         };
         tools.push_back(ToolSpec{
             "vnc_zoom",
-            "Look closely at one part of the screen. Returns just that region, enlarged, "
-            "instead of the whole screen shrunk down.\n"
-            "Use this whenever you need to tell apart things that are close together — "
-            "which row of a file list or menu is which, the exact text in a small label, "
-            "the state of a checkbox — and especially before clicking something in a "
-            "dense list. A full screenshot has to represent the entire screen at once, so "
-            "fine detail is lost; a zoom spends all of that detail on the region you name.\n"
+            "Look closely at one part of the screen. Returns the " +
+            std::to_string(kZoomWidth) + "x" + std::to_string(kZoomHeight) +
+            " pixel area around the point you name, enlarged " + std::to_string(kZoomScale) +
+            "x — about five rows of a list. The size and the magnification are always "
+            "these; you only choose where to look.\n"
+            "Use it whenever you need to tell apart things that are close together — which "
+            "row of a file list or menu is which, the exact text in a small label, the "
+            "state of a checkbox — and always before clicking something in a dense list. A "
+            "full screenshot has to represent the entire screen at once, so fine detail is "
+            "lost; a zoom spends all of it on this one area.\n"
             "The result is ruled and gridded in screen coordinates, so you do not have to "
             "judge where something is — you can read it off. Find the target, look at the "
             "gridlines that bracket it, read the numbers on the rulers, and click that "
             "position with vnc_click.\n"
-            "The region must actually contain what you are aiming at, with some room around "
-            "it. That comes first: a region too small to include the target is useless no "
-            "matter how finely it is gridded, and clicking inside it anyway just puts the "
-            "pointer on empty background. Give yourself margin — if you want one of a row of "
-            "buttons, take in the whole row rather than the spot you think one of them "
-            "occupies.\n"
-            "Within that, smaller is better: the smaller the region, the finer the grid and "
-            "the more precisely you can read a position off it. So work in two steps when it "
-            "matters — one wider zoom to see where the target really is, then a tighter one "
-            "centred on it. If a click lands on nothing, widen the region and look again "
-            "before assuming you misread the numbers; most likely the target was never in "
-            "the view.",
+            "If what you wanted is not in the view, zoom again on where it actually is. A "
+            "click aimed at something you cannot see in the picture lands on empty "
+            "background, so move the view rather than guessing past its edge.",
             objectSchema(props, {"x", "y"}), doZoom, ""});
     }
 

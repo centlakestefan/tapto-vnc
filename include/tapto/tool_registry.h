@@ -87,7 +87,7 @@ inline std::string formatUnknownToolError(const std::string& tool_name, const Re
 //
 //   vnc_screenshot            -> "Screenshot"
 //   vnc_click                 -> "Click left (412,300)"
-//   vnc_zoom                  -> "Zoom 320x100 at (150,225)"
+//   vnc_zoom                  -> "Zoom at (150,225)"
 //   vnc_move                  -> "Move to (412,300)"
 //   vnc_drag                  -> "Drag (10,20) -> (90,120)"
 //   vnc_scroll                -> "Scroll down x3 at (400,500)"
@@ -125,9 +125,6 @@ inline std::string getToolDisplayName(const std::string& tool_name, const nlohma
         }
         return "?";
     };
-    auto has = [&](const char* field) {
-        return input.is_object() && input.contains(field);
-    };
     auto point = [&](const char* xf, const char* yf) -> std::string {
         return "(" + coord(xf) + "," + coord(yf) + ")";
     };
@@ -141,13 +138,9 @@ inline std::string getToolDisplayName(const std::string& tool_name, const nlohma
         return label + " " + point("x", "y");
     }
 
-    if (tool_name == "vnc_zoom") {
-        // Size is omitted rather than filled in with doZoom's defaults, so this
-        // header does not carry a second copy of them to drift out of step.
-        // "Zoom at (x,y)" means the model did not ask for a size.
-        if (!has("width") && !has("height")) return "Zoom at " + point("x", "y");
-        return "Zoom " + coord("width") + "x" + coord("height") + " at " + point("x", "y");
-    }
+    // The region size and magnification are fixed, so there is nothing to show
+    // but where the model looked.
+    if (tool_name == "vnc_zoom") return "Zoom at " + point("x", "y");
 
     if (tool_name == "vnc_move") return "Move to " + point("x", "y");
 

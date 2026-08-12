@@ -167,15 +167,52 @@ drawn at full strength.
 | --- | --- |
 | Grid resolution equal on both axes | `minorStep` in `screenshotRegionPng()` |
 | Only a numbered line is drawn at full strength | `labelled ? 2 : 1` blend weight |
-| Region at most 640x200 | `kMaxZoomWidth` / `kMaxZoomHeight`, clamped and reported |
-| Never returned at less than 2x | `kMinZoomScale` |
-| Default region 320x100 | `doZoom()` |
+| Every zoom is 320x100 at 3x | `kZoomWidth` / `kZoomHeight` / `kZoomScale` |
+| A zoom is centred on the point asked for | `doZoom()` |
+| At a screen edge the view slides, it does not shrink | `doZoom()` |
 | One coordinate system everywhere | rulers in `screenshotRegionPng()`; there is no second one |
 | Click must follow a zoom containing it | `--require-zoom on`, off by default |
 
-Caps are enforced rather than requested. The tool description asked for short
-regions and a real run chose 400, then 300, then 200 and missed with all three
-before succeeding at 100. Guidance a model can decline is not a mechanism.
+None of this is requested; all of it is enforced. The tool description asked
+for short regions and a real run chose 400, then 300, then 200 and missed with
+all three before succeeding at 100. Guidance a model can decline is not a
+mechanism.
+
+## Why the zoom has no size
+
+`vnc_zoom` takes a point and nothing else. It used to take a rectangle, with
+floors at 240x80, caps at 640x200, and a magnification derived from whichever
+side was longest.
+
+The freedom went unused. Across one 17-zoom run the model asked for eleven
+different rectangles, converged on roughly 300x80 by itself after the first
+call, and spent four calls being clamped up from something too small to contain
+what it was aiming at. One earlier run asked repeatedly for 200x64 regions that
+did not reach the button, then clicked inside them anyway.
+
+What the freedom cost was a **ruler whose spacing changed with every call**.
+`niceStep()` runs on whatever rectangle arrives, so a 240x74 view is gridded
+every 25 px across and 10 px down while a 320x100 view is gridded every 10 px
+on both — and 25 and 10 do not divide, so that first one draws an irregular
+ladder of gaps 10, 10, 5, 5. Asked to read it, Qwen3.6-27B reported a 48 px
+Start button as 80-90 px wide and misread the y ruler's 10 px labels as 20 px.
+Its own reasoning shows it trying to reconcile the pitch it was told about with
+the pitch in front of it.
+
+Fixed, the ruler is identical in every zoom the model will ever see: **lines
+every 10 px on both axes**, x labelled every 50, y every 10, image always
+1014x319. One pitch to learn instead of one to re-derive per call.
+
+The centre semantics follow from the fixed size. Naming a corner means
+constructing a rectangle around a target, which is the arithmetic that produced
+the regions that missed; naming a point is just pointing. At a screen edge the
+view slides back inside rather than shrinking, because a shrunken region would
+be gridded differently and the constant pitch is the whole point.
+
+**What this gives up** is the survey zoom — one 640x150 call that read a
+17-row file listing in one go. Scanning a list now takes three or four calls.
+Watch for identification errors rather than aiming errors; if they appear, a
+second wider mode is the knob to add back, and only then.
 
 ## The zoom gate
 
@@ -329,9 +366,14 @@ being measured. Filenames record the geometry, so a run can be reconstructed
 arithmetically without opening anything:
 
 ```
-0036-zoomed-3x-on-300x100-at-520-620.png     region (520,620) 300x100 at 3x
+0036-zoomed-3x-on-320x100-at-520-620.png     region (520,620) 320x100 at 3x
 0037-left-clicked-at-750-660.png             the click that followed
 ```
+
+The zoom filename records the region's **top-left corner**, not the point the
+model asked for — that is what was rendered, and it is what the error has to be
+measured against. Add (160, 50) to recover the request, except where the view
+slid off a screen edge.
 
 ## Qualifying a new model
 
@@ -343,11 +385,13 @@ ideal: rows are evenly spaced and their positions are easy to establish with
 `vnc-smoketest --zoom`.
 
 **1. Placement test.** Pick one target. Run three separate tasks, each naming
-an exact zoom region of the same size, positioned so the target sits at roughly
-0.05, 0.5 and 0.9 of the region's height. Instruct the model explicitly:
+an exact zoom point, chosen so the target sits at roughly 0.05, 0.5 and 0.9 of
+the region's height. The view is 320x100 centred on the point given, so for a
+target at screen y=231 those three are `y = 231 + 44`, `231`, and `231 - 40`.
+Instruct the model explicitly:
 
 ```
-Call vnc_zoom with exactly these arguments: x=150, y=225, width=320, height=100.
+Call vnc_zoom with exactly these arguments: x=310, y=275.
 Then call vnc_click exactly once on the readme file. Do not zoom again.
 ```
 
@@ -362,12 +406,13 @@ Compute each error from the filename. What you learn:
 
 **2. Repeat on the X axis.** The failure is not axis-symmetric and it moves.
 Gemma got Y exact while X collapsed, having previously done the reverse; Qwen
-read Y off the ruler and X in image pixels. Use a wide, short region and a
-target that moves horizontally.
+read Y off the ruler and X in image pixels. Move the centre horizontally so the
+target sits at 0.05, 0.5 and 0.9 of the region's width.
 
-**2b. Shift the region's origin.** Run the same target once with the region at
-`x=0` and once at `x=150`. If the answer moves with the image rather than with
-the screen, the model is reporting image pixels — see [It may read one axis off
+**2b. Shift the region's origin.** Run the same target twice, once with the
+view centred so the region starts at `x=0` and once at `x=150`. If the answer
+moves with the image rather than with the screen, the model is reporting image
+pixels — see [It may read one axis off
 the ruler and the other in image
 pixels](#it-may-read-one-axis-off-the-ruler-and-the-other-in-image-pixels).
 Keeping the origin fixed across every test will hide this.

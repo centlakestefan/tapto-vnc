@@ -39,8 +39,9 @@ void usage(const char* argv0) {
         << "  --settle <ms>       Quiet period before sampling (default: 300)\n"
         << "  --encodings <list>  Comma-separated subset to offer the server,\n"
         << "                      e.g. raw | hextile | zrle,hextile,raw\n"
-        << "  --zoom <x,y,w,h>    Also write <out>.zoom.png: that region only,\n"
-        << "                      enlarged, exactly as the vnc_zoom tool renders it\n"
+        << "  --zoom <x,y,w,h>    Also write <out>.zoom.png: that region only, ruled\n"
+        << "                      and enlarged 3x as vnc_zoom renders it. The tool\n"
+        << "                      itself always uses 320x100, centred on its x,y\n"
         << "  --grid <px>         Rule and grid <out> every <px> screen pixels, as\n"
         << "                      tapto-vnc --grid does. Use it to see whether the\n"
         << "                      labels stay readable before spending a run on it.\n"
@@ -222,13 +223,11 @@ int main(int argc, char** argv) {
             region.width = values[2];
             region.height = values[3];
 
-            // Same scale rule the vnc_zoom tool applies, so what lands on disk
-            // is what the model would be shown. Keep these two in step: an
-            // earlier mismatch here rendered at 1x what the tool renders at 2x,
-            // which makes this a misleading way to check the tool.
-            const int longest = std::max(region.width, region.height);
-            int scale = longest > 0 ? (896 + longest / 2) / longest : 2;
-            scale = scale < 2 ? 2 : (scale > 4 ? 4 : scale);
+            // The magnification vnc_zoom uses, which is now a constant. The
+            // region stays free here because this is a diagnostic and looking
+            // at an arbitrary rectangle is the point; pass 320x100 to see
+            // exactly what the tool would return.
+            const int scale = 3;
 
             const std::vector<uint8_t> png =
                 session.screenshotRegionPng(region, scale, nullptr, true);
