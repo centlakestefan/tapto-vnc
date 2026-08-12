@@ -241,7 +241,21 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
 
         // Success
         if (status == 200) {
-            return json::parse(res->body);
+            json parsed = json::parse(res->body);
+            // Logged mainly to make image handling observable. A vision model
+            // resizes an image to its own pixel budget before tokenising it,
+            // and the token count is the only report we get of what it decided:
+            // the difference this call makes to prompt_tokens is the image's
+            // cost, and for a patch-grid model it divides back out to the
+            // dimensions the model actually looked at. Without it there is no
+            // way to tell a screenshot seen at full size from one halved.
+            if (parsed.contains("usage") && parsed["usage"].is_object()) {
+                const json& usage = parsed["usage"];
+                mclog("usage: prompt=" + std::to_string(usage.value("prompt_tokens", 0)) +
+                      " completion=" + std::to_string(usage.value("completion_tokens", 0)) +
+                      " total=" + std::to_string(usage.value("total_tokens", 0)) + "\n");
+            }
+            return parsed;
         }
 
         // Rate limiting (429)
