@@ -148,10 +148,12 @@ ZoomView g_lastZoom;
 // Off by default, because a model that grounds well does not need it and the
 // extra step costs a round trip. On for local models, where guessing a
 // position from a full screenshot is the single most common way a run goes
-// wrong — a full screen is compressed to roughly a 17x17 grid of soft tokens,
-// so a 21px list row is a third of one cell and simply is not there to be
-// seen. Every model tried so far has been told this in the tool descriptions
-// and has ignored it at least once.
+// wrong. How badly depends on the model and by more than it looks: Gemma 4
+// compresses any image to ~17x17 tokens, so a 21px list row is a third of one
+// cell and is not there to be seen, while Qwen3-VL tokenises 32x32 blocks and
+// sees the same screen 5.6x finer. Every model tried so far has been told to
+// zoom first in the tool descriptions and has ignored it at least once, which
+// is why this is a gate rather than more prose.
 bool g_requireZoom = false;
 
 // Gridline spacing, in screen pixels, for the full screenshots — 0 leaves them
@@ -240,10 +242,16 @@ std::string captureInto(Context& context, VncSession& session, const std::string
 // The sizes are the ones the old adjustable version defaulted to, kept because
 // they were measured: aiming error in a zoomed view grows with the region's
 // height, and 100px keeps it inside a single ~21px list row. 320 across at 3x
-// puts the long side at 960, near the 896 the vision tower resizes to — past
-// that, enlarging buys nothing, and short of it the crop wastes budget.
-// Enlarging is otherwise free, since an image costs a fixed number of tokens
-// whatever its size.
+// puts the long side at 960, near the 896 a fixed-budget vision tower resizes
+// to — past that such a model gains nothing, and short of it the crop wastes
+// budget it has already paid for.
+//
+// What enlarging costs depends on the model, and the two answers are far
+// apart: Gemma 4 spends 280 tokens on any image at all, so 3x is free, while
+// Qwen3-VL bills by area and the same zoom costs 320 tokens against about 30.
+// It earns that either way. Replicating pixels adds no information, but it
+// changes how the image is cut into patches, and a 32x32 patch holding three
+// rows of text becomes three patches holding one row each.
 //
 // Making them constants rather than defaults is the point of the change.
 // Adjustable, they were not used: across one 17-zoom run the model asked for

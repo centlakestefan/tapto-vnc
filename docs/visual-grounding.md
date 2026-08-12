@@ -3,9 +3,12 @@
 How tapto-vnc gets a model to put the pointer where it means to, why the
 obvious approaches fail, and how to qualify a new model in about ten minutes.
 
-Everything below was measured against **Gemma-4-31B (AWQ 4-bit, vLLM)** driving
-a Windows 10 guest at 1280x1024. Numbers are from saved frames, not from what
-the model said it did — see [Only the frames are evidence](#only-the-frames-are-evidence).
+Measured against **Gemma-4-31B (AWQ 4-bit, vLLM)** and **Qwen3.6-27B (NVFP4,
+vLLM)** driving a Windows 10 guest at 1280x1024, with the model named wherever
+the two differ — and they differ more than they look, starting with
+[how much of the screen each one can see](#how-much-of-the-screen-reaches-the-model).
+Numbers are from saved frames, not from what the model said it did — see
+[Only the frames are evidence](#only-the-frames-are-evidence).
 
 ## The short version
 
@@ -22,33 +25,80 @@ reads their numbers, and passes those to `vnc_click`.
 With that in place the same model that missed a checkbox by 103 px hit a
 `Finish` button to within 5 px, and completed an unattended MSI install.
 
-## Why full-screen clicking cannot work
+## How much of the screen reaches the model
 
-A vision model compresses every image to a fixed token budget regardless of its
-size. Gemma 4's processor config sets `image_seq_length: 280`, so the whole
-screen arrives as roughly a 17x17 grid of soft tokens:
+A screenshot does not reach the model as pixels. It reaches it as a grid of
+vision tokens, and how coarse that grid is decides what can be located at all.
+**This is the single most model-specific number in this document**, and the two
+families behave nothing alike.
 
-| what is sent | screen px per token cell |
-| --- | --- |
-| full 1280x1024 | ~75 x 60 |
-| 320x256 crop | ~19 x 15 |
-| 320x100 crop | ~19 x 6 |
+**Fixed budget.** Gemma 4's processor sets `image_seq_length: 280`, so every
+image becomes ~17x17 tokens no matter what it was. A whole screen and a
+postage stamp cost the same and arrive at the same resolution.
 
-Rows in a file listing are **21 px** apart. At full screen one token cell spans
-three of them, so the information needed to pick a row is not in the input at
-all. No prompting fixes that; the fix is to send less screen.
+**Area-proportional.** Qwen3-VL uses patch 16 with merge 2, so one token covers
+a **32x32 px block** and the count is simply `pixels / 1024`, with the sides
+snapped to multiples of 32. Nothing is downscaled until the image exceeds the
+server's area ceiling.
 
-Two further properties of that processor are worth knowing:
+What that means for the images this tool actually sends:
 
-- `do_resize` is on and pan-and-scan is off by default, so a non-square
-  screenshot is **squashed** to a square rather than letterboxed. Nothing needs
-  to invert that: the model answers in the screenshot's own pixel coordinates
-  (see below), so the squash is already undone on its side. Do not "fix" it by
-  padding client-side either, which would spend ~20% of the token budget on
-  black bars.
-- Enlarging a crop costs **no extra tokens**, since the budget is fixed. That
-  is why `vnc_zoom` enlarges to a ~896 px long side (the vision tower's native
-  resize) and never returns a region at 1:1.
+| image sent | | Gemma-4-31B | Qwen3.6-27B |
+| --- | --- | --- | --- |
+| full screen, 1280x1024 | tokens | 280 | **1280** |
+| | screen px per cell | 75 x 60 | **32 x 32** |
+| | 21 px list rows per cell | 2.9 | 1.5 |
+| full screen + `--grid`, 1358x1050 | tokens | 280 | 1386 |
+| zoom, 320x100 at 3x (1014x319) | tokens | 280 | 320 |
+| | screen px per cell | 19 x 6 | 10.7 x 10.7 |
+| | cells per 21 px list row | 3.5 | 2.0 |
+
+Rows in a file listing are **21 px** apart. For Gemma at full screen one token
+cell spans nearly three of them, so the information needed to pick a row is not
+in the input at all — no prompting fixes that, and the fix is to send less
+screen. Qwen sees the same screen **5.6x finer per axis**, which is enough that
+the same argument does not carry: when it clicks the wrong row, that is a
+different failure and needs a different remedy. Do not quote the 17x17 figure
+at a model that does not have it.
+
+Two consequences that also do not transfer:
+
+- **Enlarging is free only under a fixed budget.** For Gemma, a 3x zoom costs
+  the same 280 tokens as the raw crop, so there is no reason not to enlarge to
+  the vision tower's native ~896 px side. For Qwen the same zoom costs **320
+  tokens against about 30** — 10x — because tokens track area. It is still
+  worth doing, but the mechanism is different and worth stating correctly:
+  nearest-neighbour enlargement adds no information, yet it changes the
+  *tokenisation*, so a 32x32 patch holding three rows of text becomes three
+  patches holding one row each.
+- **Only Gemma squashes the aspect ratio.** Its `do_resize` is on and
+  pan-and-scan off, so a non-square screenshot is squeezed into a square rather
+  than letterboxed. Nothing needs to invert that — the model answers in the
+  screenshot's own pixel coordinates (see below), so the squash is already
+  undone on its side — and padding client-side would spend ~20% of the budget
+  on black bars. Qwen preserves the aspect ratio.
+
+### Finding the numbers for a model you have not measured
+
+Do not infer them from the family name. The OpenAI-compatible provider logs
+`usage:` on every call, so the cost of one image is the jump in `prompt_tokens`
+between an otherwise identical call with and without it. For a patch-grid model
+that divides straight back out to the grid: 320 tokens at 32x32 is 1014x319,
+which is the zoom, unresized.
+
+**Check the serving config too, not just the model.** The ceiling that decides
+whether an image is downscaled is set at serve time and can silently be the
+wrong knob — on this deployment `--mm-processor-kwargs '{"max_pixels": ...}'`
+was accepted and ignored, the effective setting being `size.longest_edge`,
+which is an *area* bound despite the name. A 12 MP test image tokenised
+identically at three different `max_pixels` values, which is how the dead flag
+was found. If a cap matters to you, verify it changes the token count.
+
+For this tool the caps worth asking for are: zooms are 0.32 MP and safe under
+anything, but full screenshots are 1.43 MP at 1280x1024 with ruler margins and
+1.76 MP at 1904x861. A 1 MP ceiling silently shrinks those to 84% and 75%,
+which lands on the ruler digits — the one part of the image drawn at 3x
+precisely because that image is the one at risk. Ask for 2 MP.
 
 ## What the model actually does
 
