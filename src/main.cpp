@@ -542,6 +542,14 @@ int main(int argc, char** argv) {
     if (providerUrl.empty()) providerUrl = defaults.host;
     const std::string host = providerUrl;
 
+    // What the config actually resolved to, printed before anything can fail.
+    // With several named blocks in one store, "which backend am I driving" stops
+    // being obvious from the command line — and a block pointing at the wrong
+    // dialect is otherwise invisible until the requests come back malformed.
+    // The key is deliberately not shown.
+    std::cout << "Provider " << provider << " (" << dialect << ") " << model
+              << " at " << host << "\n";
+
     // Naming a VM selects the VMware console; everything needed to reach it can
     // live in the config store, so the usual invocation is just --vm <name>.
     const bool vmwareMode = !vmName.empty();
