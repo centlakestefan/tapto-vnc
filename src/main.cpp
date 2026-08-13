@@ -69,20 +69,22 @@ std::vector<std::string> utf8Arguments() {
 }
 #endif
 
-// Per-provider defaults. The model matters most: driving a screen needs vision
-// and solid tool use, so each default is that provider's current general model
-// rather than its cheapest.
+// Per-dialect defaults. The model matters most: driving a screen needs vision
+// and solid tool use, so each default is that vendor's current general model
+// rather than its cheapest. These apply to a provider block that names a
+// dialect and nothing else, which is what makes `--provider claude` work
+// against an empty config.
 struct ProviderDefaults {
     const char* host;
     const char* model;
     const char* apiKeyEnv;
 };
 
-ProviderDefaults defaultsFor(const std::string& provider) {
-    if (provider == "openai") {
+ProviderDefaults defaultsFor(const std::string& dialect) {
+    if (dialect == "openai") {
         return {"https://api.openai.com", "gpt-4o", "OPENAI_API_KEY"};
     }
-    if (provider == "gemini") {
+    if (dialect == "gemini") {
         return {"https://generativelanguage.googleapis.com", "gemini-2.0-flash", "GEMINI_API_KEY"};
     }
     return {"https://api.anthropic.com", "claude-opus-5", "ANTHROPIC_API_KEY"};
@@ -124,6 +126,27 @@ public:
             try { return std::stoi(*value); } catch (...) {}
         }
         return fallback;
+    }
+
+    // Every provider block declared in the store, found by its
+    // `<name>-provider-type` key. Only used to name the alternatives when
+    // someone asks for a provider that is not configured — a list of what does
+    // exist is worth more than a list of what is allowed.
+    std::vector<std::string> providerNames() const {
+        static const std::string kSuffix = "-provider-type";
+        std::vector<std::string> names;
+        for (const auto& scope : m_scopes) {
+            for (const auto& entry : scope.entries()) {
+                const std::string& key = entry.first;
+                if (key.size() <= kSuffix.size()) continue;
+                if (key.compare(key.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0) continue;
+                std::string name = key.substr(0, key.size() - kSuffix.size());
+                if (std::find(names.begin(), names.end(), name) == names.end()) {
+                    names.push_back(std::move(name));
+                }
+            }
+        }
+        return names;
     }
 
 private:
@@ -208,7 +231,11 @@ void usage(const char* argv0) {
         << "                      client is stuck at the browser's viewport size.\n"
         << "  Password from $TAPTO_VCENTER_PASSWORD or config key vcenter-password.\n\n"
         << "Agent:\n"
-        << "  --provider <name>   claude|openai|gemini (config key provider-type)\n"
+        << "  --provider <name>   Which configured provider to use (config key\n"
+        << "                      provider). A name is anything you like — qwen36,\n"
+        << "                      gemma4 — defined by <name>-provider-type in the\n"
+        << "                      config; claude, openai and gemini work with no\n"
+        << "                      config at all.\n"
         << "  --provider-url <u>  API base URL; point at a local OpenAI-compatible\n"
         << "                      server, e.g. http://host:8080 (config provider-url)\n"
         << "  --model <id>        Model (default: " << kDefaultModel << ")\n"
@@ -244,11 +271,17 @@ void usage(const char* argv0) {
         << "  --type-test <text>  Type <text> into whatever has focus, save\n"
         << "                      layout-test.png, and exit. No model involved —\n"
         << "                      use it to check a layout against a real guest.\n\n"
-        << "model, provider-url and api-key can each be scoped to one provider —\n"
-        << "gemini-model, gemini-provider-url, gemini-api-key — so several backends\n"
-        << "can share one config store. The unscoped key of each name applies only\n"
-        << "to the provider named by provider-type; otherwise a local endpoint's URL\n"
-        << "and model would be sent to a hosted provider, and vice versa.\n\n"
+        << "A provider is a named block in the config store, so several backends —\n"
+        << "including two local servers speaking the same API — coexist in one file:\n\n"
+        << "  qwen36-provider-type = openai        gemma4-provider-type = openai\n"
+        << "  qwen36-provider-url  = http://box:8000   gemma4-provider-url = http://box:8081\n"
+        << "  qwen36-model         = Qwen3.6-27B   gemma4-model         = gemma-4-31b\n"
+        << "  qwen36-api-key       = local         gemma4-api-key       = local\n\n"
+        << "Then: --provider qwen36, or set 'provider = qwen36' as the default.\n"
+        << "-provider-type names the API shape to speak, not the model. The unscoped\n"
+        << "model, provider-url and api-key apply only to the default provider,\n"
+        << "so a local endpoint's URL is never sent to a hosted one, or its key to\n"
+        << "a local one.\n\n"
         << "Settings resolve in this order: CLI flag, environment, then the shared\n"
         << "tapto config store (~/.tapto/config, same one tapto-code uses), then a\n"
         << "default. The API key comes from $ANTHROPIC_API_KEY or the store's\n"
@@ -364,43 +397,75 @@ int main(int argc, char** argv) {
     // config store, then a built-in default.
     const Settings settings;
 
-    const std::string configuredProvider = settings.valueOr("provider-type", "claude");
-    if (provider.empty()) provider = configuredProvider;
-    if (provider != "claude" && provider != "openai" && provider != "gemini") {
-        std::cerr << "ERROR: unknown provider '" << provider
-                  << "'; expected claude, openai or gemini\n";
+    // A provider has a *name* and a *dialect*, and they are not the same thing.
+    //
+    // The name selects a block of config keys and is free-form: qwen36, gemma4,
+    // work-claude. The dialect is one of the three request shapes this program
+    // can speak, named by that block's `-provider-type`. Two local servers can
+    // therefore both be OpenAI-compatible and still be told apart, which they
+    // could not when the name *was* the dialect and one store held at most one
+    // configuration per vendor.
+    //
+    // `provider-type` doubles as the legacy default: a store that says
+    // `provider-type = claude` names the block "claude", whose dialect is
+    // "claude" because that is also a dialect name. Nothing needs rewriting.
+    const std::string defaultProvider =
+        settings.valueOr("provider", settings.valueOr("provider-type", "claude"));
+    if (provider.empty()) provider = defaultProvider;
+
+    const bool isDialectName =
+        provider == "claude" || provider == "openai" || provider == "gemini";
+    const std::string dialect =
+        settings.valueOr(provider + "-provider-type", isDialectName ? provider : "");
+    if (dialect.empty()) {
+        std::cerr << "ERROR: unknown provider '" << provider << "'.";
+        const std::vector<std::string> names = settings.providerNames();
+        if (!names.empty()) {
+            std::cerr << " Configured:";
+            for (const auto& name : names) std::cerr << " " << name;
+            std::cerr << ".";
+        }
+        std::cerr << "\nName a provider by adding '" << provider
+                  << "-provider-type = claude|openai|gemini' to the tapto config store, "
+                     "or use claude, openai or gemini directly.\n";
         return 2;
     }
-    const ProviderDefaults defaults = defaultsFor(provider);
+    if (dialect != "claude" && dialect != "openai" && dialect != "gemini") {
+        std::cerr << "ERROR: '" << provider << "-provider-type' is '" << dialect
+                  << "'; expected claude, openai or gemini. That key names the API "
+                     "shape to speak, not the model.\n";
+        return 2;
+    }
+    const ProviderDefaults defaults = defaultsFor(dialect);
 
-    // The provider's own environment variable takes precedence, so a machine
-    // with several keys configured picks the right one automatically.
-    std::string apiKey = fromEnv(defaults.apiKeyEnv);
-    // Then a provider-scoped config key: claude-api-key, openai-api-key,
-    // gemini-api-key. This is what lets several backends coexist in one store,
-    // including a local server that wants no real key at all.
-    if (apiKey.empty()) apiKey = settings.valueOr(provider + "-api-key", "");
-    if (apiKey.empty() && provider == configuredProvider) {
-        // Fall back to the unscoped api-key only when it belongs to the
-        // provider being used. Otherwise one vendor's key would be sent to
-        // another — or to a local endpoint, which would log it.
+    // The block's own key first. It is the most specific thing the user wrote
+    // and it is the only one that can be right when two blocks share a dialect
+    // — and, more sharply, an environment variable winning here would send a
+    // real vendor key to whatever `<name>-provider-url` points at, which for a
+    // local server means writing it into somebody's log.
+    std::string apiKey = settings.valueOr(provider + "-api-key", "");
+    if (apiKey.empty()) apiKey = fromEnv(defaults.apiKeyEnv);
+    if (apiKey.empty() && provider == defaultProvider) {
+        // The unscoped api-key belongs to the default provider only. Otherwise
+        // one vendor's key would be handed to another.
         apiKey = settings.valueOr("api-key", "");
     }
     if (apiKey.empty()) {
-        std::cerr << "ERROR: no API key for provider '" << provider << "'. Set "
-                  << defaults.apiKeyEnv << ", or add '" << provider
-                  << "-api-key' to the tapto config store";
-        if (provider != configuredProvider) {
-            std::cerr << " (the unscoped api-key belongs to provider-type="
-                      << configuredProvider << ", so it is not used here)";
+        std::cerr << "ERROR: no API key for provider '" << provider << "'. Add '"
+                  << provider << "-api-key' to the tapto config store, or set "
+                  << defaults.apiKeyEnv;
+        if (provider != defaultProvider) {
+            std::cerr << " (the unscoped api-key belongs to '" << defaultProvider
+                      << "', so it is not used here)";
         }
-        std::cerr << ".\n";
+        std::cerr << ".\nA local server that checks no key still needs one; any "
+                     "non-empty value will do.\n";
         return 2;
     }
 
     // Only Claude accepts output_config.effort; sending it elsewhere is an
     // unknown field.
-    if (provider != "claude") effort.clear();
+    if (dialect != "claude") effort.clear();
 
     if (screenshotDir.empty()) screenshotDir = settings.valueOr("screenshot-dir", "");
     if (color.empty()) color = settings.valueOr("color", "auto");
@@ -455,7 +520,7 @@ int main(int argc, char** argv) {
     }
 
     if (model.empty())    model    = settings.valueOr(provider + "-model", "");
-    if (model.empty() && provider == configuredProvider) model = settings.valueOr("model", "");
+    if (model.empty() && provider == defaultProvider) model = settings.valueOr("model", "");
     if (model.empty())    model    = defaults.model;
     if (effort.empty())   effort   = settings.valueOr("effort", "high");
     if (trace.empty())    trace    = settings.valueOr("trace-file", "");
@@ -466,13 +531,12 @@ int main(int argc, char** argv) {
     // A local OpenAI-compatible server (llama.cpp, vLLM, LM Studio) is reached
     // by pointing this at it, e.g. --provider-url http://host:8080.
     //
-    // Scoped exactly like the API key above, and for the same reason: a store
-    // holding provider-url and model for a local endpoint would otherwise send
-    // Gemini-shaped requests to that endpoint asking for its model, which
-    // fails in a way that looks like a broken client rather than a config
-    // mix-up. Use gemini-provider-url / gemini-model to pin a second provider.
+    // Scoped to the provider block, like the key and the model, and for the
+    // same reason: a store holding a url and model for a local endpoint would
+    // otherwise send them to a hosted provider, which fails in a way that looks
+    // like a broken client rather than a config mix-up.
     if (providerUrl.empty()) providerUrl = settings.valueOr(provider + "-provider-url", "");
-    if (providerUrl.empty() && provider == configuredProvider) {
+    if (providerUrl.empty() && provider == defaultProvider) {
         providerUrl = settings.valueOr("provider-url", "");
     }
     if (providerUrl.empty()) providerUrl = defaults.host;
@@ -597,10 +661,12 @@ int main(int argc, char** argv) {
 
         // The last argument is the API key itself, despite the parameter being
         // named apiKeyRef — the clients return it verbatim from getApiKey().
+        // Chosen by dialect, never by name: 'gemma4' is a name this program has
+        // never heard of, and what it means is whatever its -provider-type says.
         std::unique_ptr<AiBackend> client;
-        if (provider == "openai") {
+        if (dialect == "openai") {
             client.reset(new OpenAIClient(&config, host, model, apiKey));
-        } else if (provider == "gemini") {
+        } else if (dialect == "gemini") {
             client.reset(new GeminiClient(&config, host, model, apiKey));
         } else {
             client.reset(new ClaudeClient(&config, host, model, apiKey));
