@@ -23,7 +23,8 @@ tapto-vnc --host 192.0.2.10 "Open the settings app and turn on dark mode"
   install, a locked-down box, or a machine sitting at its login screen.
 - **Multiple providers** — Claude, any OpenAI-compatible endpoint (vLLM,
   llama.cpp, LM Studio, OpenAI itself), or Gemini, sharing one set of tools and
-  one system prompt.
+  one system prompt. Name as many as you like in one config, including two
+  local servers speaking the same API, and switch with `--provider`.
 - **Works with local models** — a 4-bit 27B quant can complete real GUI tasks,
   not just frontier models.
 - **VMware consoles** — connects through a vCenter/ESXi WebMKS console, so a VM
@@ -106,7 +107,7 @@ at `~/.tapto/config`, then a default. The store is shared with `tapto-code`.
 Plain `key = value` lines; `#` and `;` begin comments.
 
 ```
-provider-type = claude
+provider = claude
 claude-api-key = sk-ant-...
 claude-model = claude-sonnet-5
 
@@ -120,24 +121,60 @@ keep-recent-images = 2
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `provider-type` | `claude` | `claude` / `openai` / `gemini` |
-| `api-key` | — | or the provider's environment variable |
-| `provider-url` | per provider | point at a local OpenAI-compatible server |
-| `model` | per provider | |
+| `provider` | `claude` | which provider block to use |
+| `<name>-provider-type` | — | `claude` / `openai` / `gemini` — the API to speak |
+| `<name>-api-key` | — | or the vendor's environment variable |
+| `<name>-provider-url` | per dialect | point at a local OpenAI-compatible server |
+| `<name>-model` | per dialect | |
 | `keyboard-layout` | `us` | layout of the **remote** machine |
 | `keep-recent-images` | `3` | screenshots kept in the conversation |
 | `max-output-tokens` | `16000` | |
 | `max-tool-iterations` | `60` | tool calls per reply |
 | `trace-file` | unset | path for request/response diagnostics |
 
-`model`, `provider-url` and `api-key` can each be scoped to one provider
-(`gemini-model`, `openai-provider-url`), so several backends coexist in one
-store without a local endpoint's URL being sent to a hosted provider. The
-unscoped form applies only to the provider named by `provider-type`.
+### Naming providers
 
-API keys are read from the provider's environment variable first —
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` — falling back to
-config only when the variable is unset.
+A provider has a **name** and a **dialect**. The name picks a block of keys and
+can be anything; the dialect is one of the three request shapes this program
+speaks, named by that block's `-provider-type`. So two local servers that both
+expose an OpenAI-compatible API can still be told apart:
+
+```
+qwen-provider-type = openai          gemma-provider-type = openai
+qwen-provider-url  = http://box:8000 gemma-provider-url  = http://box:8081
+qwen-model         = Qwen3-VL-30B    gemma-model         = gemma-3-27b
+qwen-api-key       = local           gemma-api-key       = local
+```
+
+```sh
+tapto-vnc --provider gemma "your task"
+```
+
+`claude`, `openai` and `gemini` need no block at all — used as a name, each
+means its own dialect with that vendor's defaults. Asking for a name the store
+does not define lists the ones it does.
+
+On startup the resolved provider is printed, so a block wired to the wrong
+dialect shows up immediately rather than as malformed requests:
+
+```
+Provider gemma (openai) gemma-3-27b at http://box:8081
+```
+
+The unscoped `model`, `provider-url` and `api-key` apply only to the **default**
+provider — the one `provider` names. Otherwise a local endpoint's URL would be
+sent to a hosted vendor, or a hosted key to a local server.
+
+API keys resolve as: `<name>-api-key`, then the vendor's environment variable
+(`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`), then the unscoped
+`api-key` for the default provider. The block's own key wins on purpose — an
+environment variable taking precedence would send a real vendor key to whatever
+`<name>-provider-url` points at, and a local server will log it. A server that
+checks no key still needs one; any non-empty value does.
+
+An older store using `provider-type = claude` with `claude-api-key` keeps
+working: `provider-type` is read as the default provider's name when `provider`
+is absent.
 
 ### Useful flags
 
