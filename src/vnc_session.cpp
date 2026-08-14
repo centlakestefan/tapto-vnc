@@ -225,6 +225,10 @@ void VncSession::Impl::finishHandshake() {
 
     connected = true;
     pendingUpdates = 0;
+    // A completed handshake is traffic. Without this a reconnect that then
+    // receives nothing would still report the *previous* silence, which is the
+    // one number this is all being measured for.
+    touch();
 }
 
 VncSession::VncSession() : m_impl(new Impl()) {}
