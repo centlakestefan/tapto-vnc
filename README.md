@@ -98,7 +98,9 @@ tapto-vnc --vcenter vcenter.example.com --vm BUILD01 "your task"
 ```
 
 vCenter credentials come from `$TAPTO_VCENTER_USER` / `$TAPTO_VCENTER_PASSWORD`
-or the config store. Add `--insecure` for a self-signed certificate.
+or the config store, where the password may be a
+[reference](#keeping-secrets-out-of-the-config-file) rather than the password
+itself. Add `--insecure` for a self-signed certificate.
 
 ## Configuration
 
@@ -176,9 +178,9 @@ An older store using `provider-type = claude` with `claude-api-key` keeps
 working: `provider-type` is read as the default provider's name when `provider`
 is absent.
 
-### Keeping keys out of the config file
+### Keeping secrets out of the config file
 
-An `api-key` value may say **where** the key lives instead of holding it:
+A secret may say **where** it lives instead of holding it:
 
 | Value | Reads from |
 | --- | --- |
@@ -187,13 +189,25 @@ An `api-key` value may say **where** the key lives instead of holding it:
 | `cmd:pass show anthropic` | the first line of a command's output |
 | `wincred:tapto/work-claude` | a Windows Credential Manager generic credential |
 
+This applies to `<name>-api-key`, the unscoped `api-key`, `vcenter-password`,
+and the `--password` flag. A value with no scheme is the secret itself, so an
+existing store keeps working unchanged. `$TAPTO_VCENTER_PASSWORD` and the vendor
+key variables are taken verbatim — an environment variable is a secret in its own
+right, not a reference to one.
+
 ```
-work-api-key = wincred:tapto/work-claude
+work-api-key     = wincred:tapto/work-claude
+vcenter-password = wincred:tapto/vcenter
 ```
 
 ```sh
-cmdkey /generic:tapto/work-claude /user:tapto /pass    # prompts for the key
+cmdkey /generic:tapto/vcenter /user:tapto /pass    # prompts for the password
+tapto-vnc --host 192.0.2.10 --password wincred:tapto/guest-vnc "your task"
 ```
+
+The flag is worth pointing somewhere too: a password typed on the command line
+is in the shell history and visible in the process list for as long as the run
+lasts.
 
 `cmd:` is the general escape hatch — `pass`, `gopass`, `op read op://vault/item`,
 `gcloud`, `security find-generic-password`, or a git credential helper all work,

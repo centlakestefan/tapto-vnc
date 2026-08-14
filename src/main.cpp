@@ -219,7 +219,7 @@ void usage(const char* argv0) {
         << "Direct VNC:\n"
         << "  --host <host>       VNC server host (default: localhost)\n"
         << "  --display <n>       Display number; port is 5900+n\n"
-        << "  --password <pw>     VNC password\n\n"
+        << "  --password <pw>     VNC password, or where it lives (see below)\n\n"
         << "VMware console (WebMKS) — naming a VM selects this mode:\n"
         << "  --vm <name>         VM name (exact, case-sensitive)\n"
         << "  --vcenter <host>    Overrides config key vcenter-host\n"
@@ -283,10 +283,14 @@ void usage(const char* argv0) {
         << "model, provider-url and api-key apply only to the default provider,\n"
         << "so a local endpoint's URL is never sent to a hosted one, or its key to\n"
         << "a local one.\n\n"
-        << "An api-key may say where the key lives instead of holding it:\n"
+        << "An api-key, a vcenter-password or --password may say where the secret\n"
+        << "lives instead of holding it:\n"
         << "  env:ANTHROPIC_API_KEY        an environment variable\n"
         << "  cmd:pass show anthropic      first line of a command's output\n"
-        << "  wincred:tapto/work-claude    Windows Credential Manager (cmdkey /generic:)\n\n"
+        << "  wincred:tapto/work-claude    Windows Credential Manager (cmdkey /generic:)\n"
+        << "A value with no scheme is the secret itself. $TAPTO_VCENTER_PASSWORD and\n"
+        << "the vendor key variables are taken verbatim; they are secrets, not\n"
+        << "references.\n\n"
         << "Settings resolve in this order: CLI flag, environment, then the shared\n"
         << "tapto config store (~/.tapto/config, same one tapto-code uses), then a\n"
         << "default. The API key comes from $ANTHROPIC_API_KEY or the store's\n"
@@ -324,6 +328,26 @@ bool parseResolution(const std::string& text, int& width, int& height) {
 std::string fromEnv(const char* name) {
     const char* value = std::getenv(name);
     return value ? value : "";
+}
+
+// Replace a value that names where a secret lives with the secret itself; see
+// tapto/secret.h. A value with no scheme is already the secret and is left
+// alone, so this is safe to apply to anything the user can write a password
+// into.
+//
+// A failed reference is reported against the name the user wrote — `--password`
+// or `vcenter-password` — and answered with false rather than an empty string,
+// so the caller stops instead of carrying on to a login attempt that would look
+// like a wrong password.
+bool resolveSecretInPlace(const char* source, std::string& value) {
+    if (value.empty()) return true;
+    const tapto::Secret resolved = tapto::resolve_secret(value);
+    if (!resolved.error.empty()) {
+        std::cerr << "ERROR: " << source << ": " << resolved.error << "\n";
+        return false;
+    }
+    value = resolved.value;
+    return true;
 }
 
 }  // namespace
@@ -585,7 +609,13 @@ int main(int argc, char** argv) {
         if (vcenter.username.empty()) vcenter.username = fromEnv("TAPTO_VCENTER_USER");
         if (vcenter.username.empty()) vcenter.username = settings.valueOr("vcenter-user", "");
         vcenter.password = fromEnv("TAPTO_VCENTER_PASSWORD");
-        if (vcenter.password.empty()) vcenter.password = settings.valueOr("vcenter-password", "");
+        if (vcenter.password.empty()) {
+            // The store may say where the password lives rather than holding
+            // it. The environment variable above is taken verbatim, like the
+            // vendor API-key variables: it is a secret in its own right.
+            vcenter.password = settings.valueOr("vcenter-password", "");
+            if (!resolveSecretInPlace("vcenter-password", vcenter.password)) return 2;
+        }
         if (!vcenter.insecure) {
             vcenter.insecure = settings.valueOr("vcenter-insecure", "false") == "true";
         }
@@ -621,6 +651,12 @@ int main(int argc, char** argv) {
         std::cerr << "ERROR: --resolution only applies to a VMware console; it needs --vm.\n";
         return 2;
     }
+
+    // A VNC password only ever arrives on the command line, where it is visible
+    // in the shell history and the process list, so being able to name where it
+    // lives instead — --password wincred:tapto/guest-vnc — is worth more here
+    // than in a file only the user can read.
+    if (!resolveSecretInPlace("--password", vnc.password)) return 2;
 
     if (!trace.empty()) mclog_set_file(trace);
 
