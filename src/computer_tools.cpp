@@ -666,25 +666,54 @@ std::string doWait(Context& context, const json& input) {
 // The idle gap goes in the trace: it is the measurement that tells an idle
 // timeout apart from a network fault, and it is only available at the moment
 // the loss is discovered.
-[[noreturn]] void reportLost(VncSession& session, const std::string& tool,
-                             const std::string& detail) {
-    const int idle = session.idleSeconds();
+[[noreturn]] void reportLost(const std::string& tool, int idle, const std::string& detail) {
     mclog("VNC connection lost during '" + tool + "' after " + std::to_string(idle) +
-          "s idle" + (detail.empty() ? "" : ": " + detail) + "\n");
+          "s idle, not recovered" + (detail.empty() ? "" : ": " + detail) + "\n");
 
     std::ostringstream out;
     out << "the connection to the remote screen was lost";
     if (idle > 0) out << " after " << idle << "s with no traffic";
     if (!detail.empty()) out << " (" << detail << ")";
-    out << ". Nothing further can be done with it in this run.";
+    out << ", and could not be re-established. Nothing further can be done with it "
+           "in this run.";
     throw ConnectionLost(out.str());
+}
+
+// One attempt, using whatever the caller left in the context. Absent when the
+// session was opened by something that cannot reopen it, in which case a drop
+// is simply fatal.
+bool tryReconnect(Context& context, const std::string& tool, int idle) {
+    mclog("VNC connection lost during '" + tool + "' after " + std::to_string(idle) +
+          "s idle; reconnecting\n");
+    if (!context.has(keys::kReconnect)) return false;
+    const bool ok = context.get<std::function<bool()>>(keys::kReconnect)();
+    mclog(ok ? "VNC reconnected\n" : "VNC reconnect failed\n");
+    return ok;
+}
+
+// Re-running a tool after a reconnect is only safe if running it twice is the
+// same as running it once. Looking at the screen is; changing it is not — a
+// click that died between press and release may or may not have reached the
+// guest, and repeating an action has already cost this project a duplicated
+// installation. A pointer move is idempotent by position, so it qualifies.
+bool retrySafeTool(const std::string& name) {
+    return name == "vnc_screenshot" || name == "vnc_zoom" ||
+           name == "vnc_wait" || name == "vnc_move";
 }
 
 ToolExecutorFn guardConnection(std::string name, ToolExecutorFn inner) {
     return [name = std::move(name), inner = std::move(inner)](
                Context& context, const json& input) -> std::string {
         VncSession& session = sessionFrom(context);
-        if (!session.isConnected()) reportLost(session, name, "");
+
+        // Already dead before this call. Nothing is half-done, so a successful
+        // reconnect lets it proceed as though the drop had never happened.
+        if (!session.isConnected()) {
+            const int idle = session.idleSeconds();
+            if (!tryReconnect(context, name, idle)) reportLost(name, idle, "");
+            return inner(context, input);
+        }
+
         try {
             return inner(context, input);
         } catch (const ConnectionLost&) {
@@ -692,9 +721,27 @@ ToolExecutorFn guardConnection(std::string name, ToolExecutorFn inner) {
         } catch (const std::exception& e) {
             // A tool that failed for its own reasons keeps the old behaviour:
             // the model is told and can try something else. Only a failure that
-            // also took the connection with it is terminal.
-            if (!session.isConnected()) reportLost(session, name, e.what());
-            throw;
+            // took the connection with it gets here.
+            if (session.isConnected()) throw;
+
+            // Read before reconnecting — the handshake counts as traffic and
+            // would reset the very number worth recording.
+            const int idle = session.idleSeconds();
+            const std::string detail = e.what();
+            if (!tryReconnect(context, name, idle)) reportLost(name, idle, detail);
+
+            if (retrySafeTool(name)) return inner(context, input);
+
+            // An action that died mid-flight. The screen is trustworthy again;
+            // what the action did to it is not, and only the model can judge
+            // that from the picture.
+            std::ostringstream out;
+            out << "ERROR: the connection dropped while " << name << " was running and "
+                   "has been re-established. Whether it reached the machine at all is "
+                   "unknown. Do not simply repeat it — look at the screen first and "
+                   "work out whether it happened. ";
+            out << captureInto(context, session, "Reconnected after a dropped connection");
+            return out.str();
         }
     };
 }

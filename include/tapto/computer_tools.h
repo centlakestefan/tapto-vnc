@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,6 +28,17 @@ constexpr const char* kSession = "vnc.session";
 // only way to review what the run actually looked like afterwards, and the way
 // to capture a rendering glitch that has already scrolled past.
 constexpr const char* kScreenshotDir = "vnc.screenshot_dir";
+
+// Optional `std::function<bool()>` that re-establishes the connection the
+// tools drive, returning whether it worked. Without it a dropped console ends
+// the run; with it the tools get one attempt to carry on.
+//
+// A closure rather than a set of parameters because reconnecting is not always
+// redialling the same address: a VMware console ticket is single-use and
+// expires in minutes, so restoring one means logging in to vCenter again and
+// asking for another. Only the caller that opened the session knows how it was
+// opened.
+constexpr const char* kReconnect = "vnc.reconnect";
 }  // namespace keys
 
 // Screen-control tools, with explicit JSON schemas so the same definitions

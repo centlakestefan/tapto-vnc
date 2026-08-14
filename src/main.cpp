@@ -773,6 +773,21 @@ int main(int argc, char** argv) {
     try {
         tapto::VncSession session;
 
+        // How to open the connection, kept rather than run once. A console can
+        // be replaced after it drops, but a VMware ticket is single-use and
+        // expires in minutes, so restoring one is a fresh vCenter login and a
+        // new ticket rather than redialling the same URL. Only this scope knows
+        // which of the two modes is in play, so the knowledge is packaged here
+        // and handed to the tools.
+        auto establish = [&](tapto::VncSession& target) {
+            if (vmwareMode) {
+                const tapto::ConsoleTicket ticket = tapto::acquireConsoleTicket(vcenter, vmName);
+                target.connectWebSocket(ticket.websocketUrl());
+            } else {
+                target.connect(vnc);
+            }
+        };
+
         if (vmwareMode) {
             // Before the ticket, not after: the framebuffer is sized when the
             // RFB session opens, so a resize has to have landed by then.
@@ -790,11 +805,8 @@ int main(int argc, char** argv) {
                 }
             }
 
-            const tapto::ConsoleTicket ticket = tapto::acquireConsoleTicket(vcenter, vmName);
-            session.connectWebSocket(ticket.websocketUrl());
-        } else {
-            session.connect(vnc);
         }
+        establish(session);
 
         std::cout << "Connected to " << session.desktopName() << " ("
                   << session.width() << "x" << session.height() << ")\n"
@@ -835,6 +847,26 @@ int main(int argc, char** argv) {
         Context context;
         context.tools = tapto::makeComputerTools();
         context.set(tapto::keys::kSession, &session);
+
+        // One attempt to put the console back, so a dropped socket costs a
+        // pause rather than the run. Deliberately does not loop: if the first
+        // try fails the cause is not transient, and a run that keeps redialling
+        // a machine nobody is watching is worse than one that stops.
+        context.set<std::function<bool()>>(tapto::keys::kReconnect, [&]() -> bool {
+            try { session.disconnect(); } catch (const std::exception&) {}
+            try {
+                establish(session);
+                // Prime it, exactly as after the first connect: the composite
+                // is empty again and the next screenshot must not be a partial
+                // first update.
+                session.capture();
+                return session.isConnected();
+            } catch (const std::exception& e) {
+                mclog(std::string("VNC reconnect failed: ") + e.what() + "\n");
+                return false;
+            }
+        });
+
         if (!screenshotDir.empty()) {
             context.set(tapto::keys::kScreenshotDir, screenshotDir);
             std::cout << "Saving screenshots to " << screenshotDir << "\n";
