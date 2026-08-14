@@ -940,8 +940,22 @@ int main(int argc, char** argv) {
         std::string line;
         while (true) {
             if (!session.isConnected()) {
-                tapto::ui::print_error("VNC connection lost");
-                return 1;
+                // Sitting at this prompt is the longest silence in a run —
+                // nothing pumps the socket while getline blocks — so it is the
+                // most likely place to discover a console that timed out. Give
+                // it the same single attempt the tools get, rather than ending
+                // the session next to the machinery that could have saved it.
+                const int idle = session.idleSeconds();
+                mclog("VNC connection lost while idle at the prompt after " +
+                      std::to_string(idle) + "s; reconnecting\n");
+                const bool ok =
+                    context.get<std::function<bool()>>(tapto::keys::kReconnect)();
+                mclog(ok ? "VNC reconnected\n" : "VNC reconnect failed\n");
+                if (!ok) {
+                    tapto::ui::print_error("VNC connection lost");
+                    return 1;
+                }
+                std::cout << "Reconnected after " << idle << "s without traffic\n";
             }
             std::cout << "\n> " << std::flush;
             if (!std::getline(std::cin, line)) break;   // Ctrl-D
