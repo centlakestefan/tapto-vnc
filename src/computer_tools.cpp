@@ -682,9 +682,16 @@ std::string doWait(Context& context, const json& input) {
 // One attempt, using whatever the caller left in the context. Absent when the
 // session was opened by something that cannot reopen it, in which case a drop
 // is simply fatal.
-bool tryReconnect(Context& context, const std::string& tool, int idle) {
+//
+// The reason is logged here and not only when recovery fails, because a
+// recovered drop is now the common case and it is the one still being
+// diagnosed: a reconnect that works leaves no other trace of what went wrong,
+// so the evidence would be discarded exactly when the run carries on long
+// enough to hit the fault again.
+bool tryReconnect(Context& context, const std::string& tool, int idle,
+                  const std::string& detail) {
     mclog("VNC connection lost during '" + tool + "' after " + std::to_string(idle) +
-          "s idle; reconnecting\n");
+          "s idle" + (detail.empty() ? "" : " (" + detail + ")") + "; reconnecting\n");
     if (!context.has(keys::kReconnect)) return false;
     const bool ok = context.get<std::function<bool()>>(keys::kReconnect)();
     mclog(ok ? "VNC reconnected\n" : "VNC reconnect failed\n");
@@ -711,7 +718,7 @@ ToolExecutorFn guardConnection(std::string name, ToolExecutorFn inner) {
         if (!session.isConnected()) {
             const int idle = session.idleSeconds();
             const std::string detail = session.lastError();
-            if (!tryReconnect(context, name, idle)) reportLost(name, idle, detail);
+            if (!tryReconnect(context, name, idle, detail)) reportLost(name, idle, detail);
             return inner(context, input);
         }
 
@@ -733,7 +740,7 @@ ToolExecutorFn guardConnection(std::string name, ToolExecutorFn inner) {
             // socket, whereas this says what closed it.
             const std::string detail =
                 session.lastError().empty() ? std::string(e.what()) : session.lastError();
-            if (!tryReconnect(context, name, idle)) reportLost(name, idle, detail);
+            if (!tryReconnect(context, name, idle, detail)) reportLost(name, idle, detail);
 
             if (retrySafeTool(name)) return inner(context, input);
 

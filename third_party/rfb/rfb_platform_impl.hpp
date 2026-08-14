@@ -8,6 +8,7 @@
 
 #include "rfb_platform.hpp"
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 
 #ifdef _WIN32
@@ -27,8 +28,23 @@
     inline bool is_ewouldblock() { return WSAGetLastError() == WSAEWOULDBLOCK; }
     inline const char* get_error_string() {
         static thread_local char buf[256];
-        FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                      nullptr, WSAGetLastError(), 0, buf, sizeof(buf), nullptr);
+        const int err = WSAGetLastError();
+        const DWORD written = FormatMessageA(
+            FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            nullptr, err, 0, buf, sizeof(buf), nullptr);
+        if (written == 0) {
+            // No text for this code. The number beats what the buffer holds
+            // otherwise, which is whatever the previous call left in it.
+            std::snprintf(buf, sizeof(buf), "socket error %d", err);
+            return buf;
+        }
+        // FormatMessage ends its text with ".\r\n". Left in place, a single
+        // error splits a log line in two and lands a stray blank line in the
+        // middle of an exception message.
+        size_t len = written;
+        while (len > 0 && (buf[len - 1] == '\r' || buf[len - 1] == '\n' || buf[len - 1] == ' ')) {
+            buf[--len] = '\0';
+        }
         return buf;
     }
 

@@ -418,12 +418,19 @@ bool Client::processMessage() {
         return false;
     }
     
-    // Check if data is available (non-blocking)
-    if (!m_connection->hasDataAvailable(0)) {
-        return false;
-    }
-    
     try {
+        // Check if data is available (non-blocking).
+        //
+        // Inside the try, not before it: polling a socket whose TCB the OS has
+        // torn down throws, and outside the try that exception escapes past
+        // onError and disconnect() both. The caller is then left to work out
+        // what happened from whatever fails next, which is the symptom rather
+        // than the fault. A poll failure is a connection fault like any other
+        // and is reported like one.
+        if (!m_connection->hasDataAvailable(0)) {
+            return false;
+        }
+
         // Read message type
         U8 msg_type = m_connection->receiveU8();
         
