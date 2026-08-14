@@ -322,7 +322,19 @@ bool TCPTransport::hasDataAvailable(int timeout_ms) const {
         throw ConnectionException("Failed to poll socket: " + std::string(get_error_string()));
     }
 
-    return result > 0 && (pfd.revents & POLLIN);
+    // POLLHUP and POLLERR count as "there is something to read", even though
+    // there is nothing left to read: a reset connection sets those and not
+    // POLLIN on Windows, so waiting for readable alone reports "no data"
+    // forever and a dead socket looks exactly like an idle one. The caller then
+    // learns of the close only when it next tries to send, several seconds
+    // later and described as a send failure.
+    //
+    // Saying yes here lets receive() run and throw — "Connection closed by
+    // peer" on a clean end of stream, the OS error otherwise — which is where
+    // Client::processMessage() already turns a fault into onError and a
+    // disconnect. Half-closed connections still deliver their buffered data
+    // first, because POLLIN is set alongside POLLHUP while any remains.
+    return result > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR));
 }
 
 void TCPTransport::throwIfNotConnected() const {

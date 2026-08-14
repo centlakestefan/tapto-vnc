@@ -1091,7 +1091,15 @@ bool WebSocketTransport::socketHasData(int timeout_ms) const {
         throw WebSocketException("Failed to poll socket: " + std::string(get_error_string()));
     }
 
-    return result > 0 && (pfd.revents & POLLIN);
+    // POLLHUP and POLLERR as well as POLLIN; see the same call in
+    // TCPTransport::hasDataAvailable for why.
+    //
+    // It matters at least as much here. A console that ends politely sends a
+    // Close frame, which is ordinary readable data and was always noticed —
+    // but a console that is reset mid-session sends nothing, and that is the
+    // failure actually being chased. Without this, the reset is invisible until
+    // the next pointer or key event fails to send.
+    return result > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR));
 }
 
 }
