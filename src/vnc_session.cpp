@@ -96,6 +96,24 @@ struct VncSession::Impl {
     // unexpected message type or the peer simply going away.
     std::string lastError;
 
+    // True only while a close we asked for is in flight.
+    //
+    // Without it every trace ends the same way, because ~VncSession closes the
+    // transport and that fires the same callback a dropped connection does. A
+    // run that ended with /exit and a run that lost the console were therefore
+    // indistinguishable from the log — which is the one thing the log is being
+    // kept for. onDisconnected fires from inside client->disconnect(), on this
+    // thread, so a plain flag is enough.
+    bool closingOurselves = false;
+
+    // Close the transport and have it attributed to us.
+    void closeTransport() {
+        if (!client) return;
+        closingOurselves = true;
+        client->disconnect();
+        closingOurselves = false;
+    }
+
     // Diagnostics. An update message arriving tells us nothing about whether
     // it carried pixels, so count what actually reached the composite.
     struct Stats {
@@ -208,9 +226,16 @@ void VncSession::Impl::openTransport(rfb::TransportType transport) {
         mclog("RFB error: " + message + "\n");
     };
     callbacks.onDisconnected = [this]() {
-        mclog("RFB transport closed" +
-              (lastError.empty() ? std::string(", peer or local shutdown")
-                                 : ", last error: " + lastError) + "\n");
+        if (closingOurselves) {
+            mclog("RFB transport closed by us\n");
+            return;
+        }
+        mclog("RFB transport closed by the peer" +
+              (lastError.empty()
+                   ? std::string("; no error was reported, so the far end closed a "
+                                 "healthy stream")
+                   : ", last error: " + lastError) +
+              "\n");
     };
     client->setCallbacks(callbacks);
 }
@@ -223,7 +248,7 @@ void VncSession::Impl::finishHandshake() {
     // palette-based server would need SetColorMapEntries tracking, which we
     // don't do — fail loudly rather than hand the model a black screen.
     if (!info.pixelFormat.trueColorFlag) {
-        client->disconnect();
+        closeTransport();
         throw std::runtime_error(
             "VncSession: server uses a palette pixel format; only true-color is supported");
     }
@@ -231,7 +256,7 @@ void VncSession::Impl::finishHandshake() {
     width  = info.framebufferWidth;
     height = info.framebufferHeight;
     if (width <= 0 || height <= 0) {
-        client->disconnect();
+        closeTransport();
         throw std::runtime_error("VncSession: server reported an empty framebuffer");
     }
 
@@ -260,7 +285,7 @@ VncSession::VncSession() : m_impl(new Impl()) {}
 VncSession::~VncSession() {
     if (m_impl && m_impl->connected && m_impl->client) {
         try {
-            m_impl->client->disconnect();
+            m_impl->closeTransport();
         } catch (...) {
             // Destructors don't throw; a failed close is not actionable here.
         }
@@ -320,7 +345,7 @@ void VncSession::setEncodings(const std::vector<std::string>& names) {
 void VncSession::disconnect() {
     Impl& impl = *m_impl;
     if (!impl.connected) return;
-    impl.client->disconnect();
+    impl.closeTransport();
     impl.connected = false;
 }
 
