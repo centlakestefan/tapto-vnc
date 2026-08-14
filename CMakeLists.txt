@@ -108,6 +108,7 @@ add_library(tapto_agent STATIC
   src/config.cpp
   src/input_map.cpp
   src/paths.cpp
+  src/secret.cpp
   src/tool_image.cpp
   src/ui.cpp
 )
@@ -120,6 +121,13 @@ target_link_libraries(tapto_agent
          OpenSSL::SSL OpenSSL::Crypto
 )
 target_compile_definitions(tapto_agent PUBLIC CPPHTTPLIB_OPENSSL_SUPPORT)
+
+# CredReadW / CredFree, for reading API keys out of Windows Credential Manager.
+# Most Windows toolchains link advapi32 by default; say so explicitly so the
+# build doesn't depend on that.
+if(WIN32)
+  target_link_libraries(tapto_agent PRIVATE advapi32)
+endif()
 
 if(MSVC)
   target_compile_options(tapto_agent PRIVATE /W4 /EHsc /utf-8)

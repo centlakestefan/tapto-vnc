@@ -28,6 +28,7 @@
 #include "tapto/log.h"
 #include "tapto/openai.h"
 #include "tapto/paths.h"
+#include "tapto/secret.h"
 #include "tapto/ui.h"
 #include "tapto/vmware_console.h"
 #include "tapto/vnc_session.h"
@@ -282,6 +283,10 @@ void usage(const char* argv0) {
         << "model, provider-url and api-key apply only to the default provider,\n"
         << "so a local endpoint's URL is never sent to a hosted one, or its key to\n"
         << "a local one.\n\n"
+        << "An api-key may say where the key lives instead of holding it:\n"
+        << "  env:ANTHROPIC_API_KEY        an environment variable\n"
+        << "  cmd:pass show anthropic      first line of a command's output\n"
+        << "  wincred:tapto/work-claude    Windows Credential Manager (cmdkey /generic:)\n\n"
         << "Settings resolve in this order: CLI flag, environment, then the shared\n"
         << "tapto config store (~/.tapto/config, same one tapto-code uses), then a\n"
         << "default. The API key comes from $ANTHROPIC_API_KEY or the store's\n"
@@ -443,13 +448,35 @@ int main(int argc, char** argv) {
     // — and, more sharply, an environment variable winning here would send a
     // real vendor key to whatever `<name>-provider-url` points at, which for a
     // local server means writing it into somebody's log.
-    std::string apiKey = settings.valueOr(provider + "-api-key", "");
-    if (apiKey.empty()) apiKey = fromEnv(defaults.apiKeyEnv);
-    if (apiKey.empty() && provider == defaultProvider) {
+    //
+    // A configured value may name where the key lives — `env:`, `cmd:`,
+    // `wincred:` — instead of being the key; see tapto/secret.h. The vendor
+    // environment variable is a secret in its own right, never a reference, so
+    // it is taken verbatim.
+    tapto::Secret key;
+    if (const std::string configured = settings.valueOr(provider + "-api-key", "");
+        !configured.empty()) {
+        key = tapto::resolve_secret(configured);
+    } else if (std::string vendorEnv = fromEnv(defaults.apiKeyEnv); !vendorEnv.empty()) {
+        key.value = std::move(vendorEnv);
+    } else if (provider == defaultProvider) {
         // The unscoped api-key belongs to the default provider only. Otherwise
         // one vendor's key would be handed to another.
-        apiKey = settings.valueOr("api-key", "");
+        if (const std::string unscoped = settings.valueOr("api-key", ""); !unscoped.empty()) {
+            key = tapto::resolve_secret(unscoped);
+        }
     }
+
+    // A key that is configured but could not be read is reported as itself,
+    // never as a missing key: sending the user off to set something they have
+    // already set hides the reference that is actually broken. Falling through
+    // to the next source would be worse still — that is how one endpoint ends
+    // up being handed another one's key.
+    if (!key.error.empty()) {
+        std::cerr << "ERROR: provider '" << provider << "': " << key.error << "\n";
+        return 2;
+    }
+    const std::string apiKey = key.value;
     if (apiKey.empty()) {
         std::cerr << "ERROR: no API key for provider '" << provider << "'. Add '"
                   << provider << "-api-key' to the tapto config store, or set "

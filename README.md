@@ -123,7 +123,7 @@ keep-recent-images = 2
 | --- | --- | --- |
 | `provider` | `claude` | which provider block to use |
 | `<name>-provider-type` | — | `claude` / `openai` / `gemini` — the API to speak |
-| `<name>-api-key` | — | or the vendor's environment variable |
+| `<name>-api-key` | — | or the vendor's environment variable; may be an `env:` / `cmd:` / `wincred:` reference |
 | `<name>-provider-url` | per dialect | point at a local OpenAI-compatible server |
 | `<name>-model` | per dialect | |
 | `keyboard-layout` | `us` | layout of the **remote** machine |
@@ -175,6 +175,46 @@ checks no key still needs one; any non-empty value does.
 An older store using `provider-type = claude` with `claude-api-key` keeps
 working: `provider-type` is read as the default provider's name when `provider`
 is absent.
+
+### Keeping keys out of the config file
+
+An `api-key` value may say **where** the key lives instead of holding it:
+
+| Value | Reads from |
+| --- | --- |
+| `sk-ant-...` | the value itself |
+| `env:ANTHROPIC_API_KEY` | an environment variable |
+| `cmd:pass show anthropic` | the first line of a command's output |
+| `wincred:tapto/work-claude` | a Windows Credential Manager generic credential |
+
+```
+work-api-key = wincred:tapto/work-claude
+```
+
+```sh
+cmdkey /generic:tapto/work-claude /user:tapto /pass    # prompts for the key
+```
+
+`cmd:` is the general escape hatch — `pass`, `gopass`, `op read op://vault/item`,
+`gcloud`, `security find-generic-password`, or a git credential helper all work,
+and the store keeps saying which provider uses which secret. The command's stderr
+and stdin are left attached to the terminal, so a helper that needs to unlock a
+vault can prompt.
+
+`wincred:` reads a **generic** credential, which Windows encrypts under your user
+account with DPAPI. That protects the key from a config file that gets backed up,
+synced, screen-shared or pasted into an issue — it does *not* protect it from
+code running as you, which can read the credential without a prompt. It is the
+same trade git's `wincred` credential helper makes. Both blob encodings are
+accepted, so credentials written by `cmdkey` or by git's helper are read
+correctly.
+
+A reference that fails — variable unset, command non-zero, credential missing —
+is a hard error naming the problem. It never falls through to the next source,
+because that is how one endpoint ends up being handed another one's key.
+
+The store is shared with `tapto-code`, which can write it for you:
+`tapto-code --global config set work-api-key wincred:tapto/work-claude`.
 
 ### Useful flags
 
