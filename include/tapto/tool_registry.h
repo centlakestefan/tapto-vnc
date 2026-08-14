@@ -4,6 +4,7 @@
 #pragma once
 
 #include <functional>
+#include <stdexcept>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -13,6 +14,24 @@ class Context;
 // A tool executor receives the run context and the model-supplied JSON input
 // and returns a string result that is fed back to the model.
 using ToolExecutorFn = std::function<std::string(Context&, const nlohmann::json&)>;
+
+namespace tapto {
+
+// Thrown by an executor when whatever the tools drive is gone for good, so
+// every later call in this turn would fail identically.
+//
+// The agent loop turns an ordinary tool exception into a tool result and hands
+// it back to the model, which is right for a bad argument and wrong for this:
+// the model cannot repair a dead connection, so it retries, and each retry
+// costs an API round trip. One observed run spent five iterations asking for
+// screenshots of a machine it was no longer attached to, then reasoned at
+// length about whether its last click had registered. A provider must let this
+// one propagate rather than answer it.
+struct ConnectionLost : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+}  // namespace tapto
 
 // Declarative description of a tool the model may call.
 struct ToolSpec {

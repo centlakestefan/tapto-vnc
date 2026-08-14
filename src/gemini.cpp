@@ -392,6 +392,12 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
                 try {
                     result = it->second(args);
                 }
+                catch (const tapto::ConnectionLost&) {
+                    // Not answerable by the model: every later call fails the
+                    // same way. End the turn instead of spending a round trip
+                    // on each retry.
+                    throw;
+                }
                 catch (const std::exception& e) {
                     result = "ERROR: Tool execution failed: " + std::string(e.what());
                     mclog("Tool execution exception: " + std::string(e.what()) + "\n");

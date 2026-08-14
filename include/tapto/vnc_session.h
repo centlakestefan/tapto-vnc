@@ -65,6 +65,16 @@ public:
     void disconnect();
     bool isConnected() const;
 
+    // Seconds since the last exchange with the server, in either direction.
+    //
+    // Worth having because a console dies quietly and while nothing is being
+    // asked of it: the agent spends most of a run waiting on the model, so by
+    // the time a socket is found dead the interesting question is how long the
+    // silence before it was. A consistent interval across failures names an
+    // idle timeout; a scattered one means something else broke. Zero before
+    // the first exchange.
+    int idleSeconds() const;
+
     int                width() const;
     int                height() const;
     const std::string& desktopName() const;

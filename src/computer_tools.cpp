@@ -14,6 +14,7 @@
 #include <thread>
 
 #include "tapto/input_map.h"
+#include "tapto/log.h"
 #include "tapto/vnc_session.h"
 
 using nlohmann::json;
@@ -657,6 +658,47 @@ std::string doWait(Context& context, const json& input) {
     return captureInto(context, session, "Waited " + std::to_string(ms) + "ms");
 }
 
+// Turns a dead connection into a ConnectionLost, before the tool runs and
+// again if it dies mid-call.
+//
+// Checked here rather than in each executor because every one of them touches
+// the session, and because the failure is the same whichever one noticed it.
+// The idle gap goes in the trace: it is the measurement that tells an idle
+// timeout apart from a network fault, and it is only available at the moment
+// the loss is discovered.
+[[noreturn]] void reportLost(VncSession& session, const std::string& tool,
+                             const std::string& detail) {
+    const int idle = session.idleSeconds();
+    mclog("VNC connection lost during '" + tool + "' after " + std::to_string(idle) +
+          "s idle" + (detail.empty() ? "" : ": " + detail) + "\n");
+
+    std::ostringstream out;
+    out << "the connection to the remote screen was lost";
+    if (idle > 0) out << " after " << idle << "s with no traffic";
+    if (!detail.empty()) out << " (" << detail << ")";
+    out << ". Nothing further can be done with it in this run.";
+    throw ConnectionLost(out.str());
+}
+
+ToolExecutorFn guardConnection(std::string name, ToolExecutorFn inner) {
+    return [name = std::move(name), inner = std::move(inner)](
+               Context& context, const json& input) -> std::string {
+        VncSession& session = sessionFrom(context);
+        if (!session.isConnected()) reportLost(session, name, "");
+        try {
+            return inner(context, input);
+        } catch (const ConnectionLost&) {
+            throw;
+        } catch (const std::exception& e) {
+            // A tool that failed for its own reasons keeps the old behaviour:
+            // the model is told and can try something else. Only a failure that
+            // also took the connection with it is terminal.
+            if (!session.isConnected()) reportLost(session, name, e.what());
+            throw;
+        }
+    };
+}
+
 json objectSchema(json properties, std::vector<std::string> required) {
     return json{
         {"type", "object"},
@@ -816,6 +858,13 @@ std::vector<ToolSpec> makeComputerTools() {
                                   {"description", "Milliseconds to wait. Defaults to 1000."}}}},
                      {}),
         doWait, ""});
+
+    // Applied here rather than at each call site so a tool added later cannot
+    // forget it: every one of these needs the session, and none of them can do
+    // anything useful without it.
+    for (ToolSpec& tool : tools) {
+        tool.executor = guardConnection(tool.name, std::move(tool.executor));
+    }
 
     return tools;
 }

@@ -77,6 +77,14 @@ struct VncSession::Impl {
     int  pendingUpdates = 0;   // framebuffer updates seen since last checked
     std::vector<rfb::S32> encodings;  // empty = offer the full default set
 
+    // When the server was last heard from or spoken to. A console that dies
+    // does it quietly and while nothing is being asked of it — the agent spends
+    // most of a run waiting on the model — so the length of the silence before
+    // a socket turns out to be dead is the one measurement that separates an
+    // idle timeout from a network fault or a stolen console.
+    Clock::time_point lastActivity{};
+    void touch() { lastActivity = Clock::now(); }
+
     // Diagnostics. An update message arriving tells us nothing about whether
     // it carried pixels, so count what actually reached the composite.
     struct Stats {
@@ -171,6 +179,7 @@ void VncSession::Impl::applyUpdate(const rfb::FramebufferUpdateMsg& msg) {
         applyRectangle(rect);
     }
     ++pendingUpdates;
+    touch();
 }
 
 void VncSession::Impl::openTransport(rfb::TransportType transport) {
@@ -735,11 +744,20 @@ bool VncSession::writePng(const std::string& path) const {
 void VncSession::sendPointer(uint8_t buttonMask, uint16_t x, uint16_t y) {
     if (!m_impl->connected) throw std::runtime_error("VncSession: not connected");
     m_impl->client->sendPointerEvent(buttonMask, x, y);
+    m_impl->touch();
 }
 
 void VncSession::sendKey(uint32_t keysym, bool down) {
     if (!m_impl->connected) throw std::runtime_error("VncSession: not connected");
     m_impl->client->sendKeyEvent(keysym, down);
+    m_impl->touch();
+}
+
+int VncSession::idleSeconds() const {
+    const Impl& impl = *m_impl;
+    if (impl.lastActivity == Clock::time_point{}) return 0;
+    const auto gap = Clock::now() - impl.lastActivity;
+    return static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(gap).count());
 }
 
 }  // namespace tapto
