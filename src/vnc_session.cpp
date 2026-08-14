@@ -11,6 +11,7 @@
 
 #include "rfb_client.hpp"
 #include "rfb_pixel_format.hpp"
+#include "tapto/log.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO
@@ -84,6 +85,16 @@ struct VncSession::Impl {
     // idle timeout from a network fault or a stolen console.
     Clock::time_point lastActivity{};
     void touch() { lastActivity = Clock::now(); }
+
+    // Why the connection ended, recorded as it ends.
+    //
+    // rfb::Client::processMessage() catches every exception, hands the reason
+    // to onError, and then disconnects. Leaving that callback unset throws the
+    // reason away, and the only evidence remaining is "Socket is not connected"
+    // from whatever touches the socket next — the symptom, several seconds
+    // after the fault, with nothing to say whether it was a decoder, an
+    // unexpected message type or the peer simply going away.
+    std::string lastError;
 
     // Diagnostics. An update message arriving tells us nothing about whether
     // it carried pixels, so count what actually reached the composite.
@@ -189,6 +200,18 @@ void VncSession::Impl::openTransport(rfb::TransportType transport) {
     callbacks.onFramebufferUpdate = [this](const rfb::FramebufferUpdateMsg& msg) {
         applyUpdate(msg);
     };
+    // Not all of these are fatal — an undecodable rectangle is reported and
+    // skipped — so they are logged rather than thrown. The one that matters is
+    // the last one before the transport closes.
+    callbacks.onError = [this](const std::string& message) {
+        lastError = message;
+        mclog("RFB error: " + message + "\n");
+    };
+    callbacks.onDisconnected = [this]() {
+        mclog("RFB transport closed" +
+              (lastError.empty() ? std::string(", peer or local shutdown")
+                                 : ", last error: " + lastError) + "\n");
+    };
     client->setCallbacks(callbacks);
 }
 
@@ -225,6 +248,7 @@ void VncSession::Impl::finishHandshake() {
 
     connected = true;
     pendingUpdates = 0;
+    lastError.clear();
     // A completed handshake is traffic. Without this a reconnect that then
     // receives nothing would still report the *previous* silence, which is the
     // one number this is all being measured for.
@@ -756,6 +780,8 @@ void VncSession::sendKey(uint32_t keysym, bool down) {
     m_impl->client->sendKeyEvent(keysym, down);
     m_impl->touch();
 }
+
+const std::string& VncSession::lastError() const { return m_impl->lastError; }
 
 int VncSession::idleSeconds() const {
     const Impl& impl = *m_impl;

@@ -710,7 +710,8 @@ ToolExecutorFn guardConnection(std::string name, ToolExecutorFn inner) {
         // reconnect lets it proceed as though the drop had never happened.
         if (!session.isConnected()) {
             const int idle = session.idleSeconds();
-            if (!tryReconnect(context, name, idle)) reportLost(name, idle, "");
+            const std::string detail = session.lastError();
+            if (!tryReconnect(context, name, idle)) reportLost(name, idle, detail);
             return inner(context, input);
         }
 
@@ -725,9 +726,13 @@ ToolExecutorFn guardConnection(std::string name, ToolExecutorFn inner) {
             if (session.isConnected()) throw;
 
             // Read before reconnecting — the handshake counts as traffic and
-            // would reset the very number worth recording.
+            // clears the error, resetting the two things worth recording.
             const int idle = session.idleSeconds();
-            const std::string detail = e.what();
+            // The RFB layer's own account beats the symptom the caller saw:
+            // "Socket is not connected" only says somebody touched a closed
+            // socket, whereas this says what closed it.
+            const std::string detail =
+                session.lastError().empty() ? std::string(e.what()) : session.lastError();
             if (!tryReconnect(context, name, idle)) reportLost(name, idle, detail);
 
             if (retrySafeTool(name)) return inner(context, input);

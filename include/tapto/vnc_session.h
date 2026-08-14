@@ -75,6 +75,15 @@ public:
     // the first exchange.
     int idleSeconds() const;
 
+    // The last fault the RFB layer reported, or empty if it never reported one.
+    //
+    // The client catches every exception while processing a message, reports it
+    // and then closes the connection, so this is where the cause of a drop
+    // lives. Empty after a clean close means the peer went away rather than
+    // anything being malformed. Not cleared by a reconnect until the new
+    // handshake completes, so it survives long enough to be reported.
+    const std::string& lastError() const;
+
     int                width() const;
     int                height() const;
     const std::string& desktopName() const;
