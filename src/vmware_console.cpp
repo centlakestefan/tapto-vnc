@@ -394,9 +394,34 @@ ScreenSize setScreenResolution(const VCenterCredentials& credentials,
         "<height>" + std::to_string(height) + "</height>"
         "</vim25:SetScreenResolution></soapenv:Body></soapenv:Envelope>";
 
-    auto res = soapCall(session, body);
-    if (!res || res->status != 200) {
-        fail("SetScreenResolution", describeFault(res));
+    // ToolsUnavailableFault means the request reached vCenter and VMware Tools
+    // was not there to take it — still starting after a boot, or restarting
+    // after an update. It is transient by definition and clears within seconds,
+    // which is why asking a second time usually works.
+    //
+    // Only this fault is retried. InvalidPowerState, an authentication failure
+    // or an unknown VM will answer the same however many times they are asked,
+    // and turning those into a half-minute of silent retrying would hide them.
+    constexpr int kToolsAttempts      = 4;
+    constexpr int kToolsRetrySeconds  = 3;
+    for (int attempt = 1;; ++attempt) {
+        auto res = soapCall(session, body);
+        if (res && res->status == 200) break;
+
+        const std::string fault = describeFault(res);
+        // Substring rather than equality: the detail element is spelled
+        // ToolsUnavailable or ToolsUnavailableFault depending on the vCenter.
+        const bool toolsNotReady = fault.find("ToolsUnavailable") != std::string::npos;
+        if (!toolsNotReady || attempt >= kToolsAttempts) {
+            fail("SetScreenResolution",
+                 attempt > 1 ? fault + ", still after " + std::to_string(attempt) + " attempts"
+                             : fault);
+        }
+
+        logStep(credentials.verbose,
+                "VMware Tools not ready yet (" + fault + "); retrying in " +
+                    std::to_string(kToolsRetrySeconds) + "s");
+        std::this_thread::sleep_for(std::chrono::seconds(kToolsRetrySeconds));
     }
 
     // The call returns as soon as the request reaches VMware Tools; the guest
