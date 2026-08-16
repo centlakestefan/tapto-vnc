@@ -347,6 +347,12 @@ void usage(const char* argv0) {
         << "                      this is the same idea applied at 1:1, where it\n"
         << "                      is not yet known to help — measure before\n"
         << "                      trusting it.\n"
+        << "  --wake <mode>       on|off (config key wake, default on). Sends\n"
+        << "                      left Shift after connecting, to dismiss a\n"
+        << "                      blank screen saver before the first\n"
+        << "                      screenshot. Shift types nothing and activates\n"
+        << "                      nothing; --wake off skips it, at the cost of a\n"
+        << "                      black first frame on a guest left alone.\n"
         << "  --layout <name>     Keyboard layout of the REMOTE machine\n"
         << "                      (config key keyboard-layout; default us)\n"
         << "  --altcode <mode>    on|off|auto — Alt+numpad fallback for characters\n"
@@ -455,7 +461,8 @@ int main(int argc, char** argv) {
     tapto::VCenterCredentials vcenter;
     // Left empty so config can supply them; CLI flags win when present.
     std::string vmName, model, effort, trace, task, provider, layout, typeTest, altcode, color,
-                screenshotDir, providerUrl, resolution, thinking, requireZoom, moveFirst, grid;
+                screenshotDir, providerUrl, resolution, thinking, requireZoom, moveFirst, grid,
+                wake;
     int maxSteps = 0;
     int resolutionWidth = 0, resolutionHeight = 0;
     bool quiet = false;
@@ -495,6 +502,7 @@ int main(int argc, char** argv) {
         if (const char* v = option(argc, argv, i, "--thinking"))  { thinking = v; continue; }
         if (const char* v = option(argc, argv, i, "--require-zoom")) { requireZoom = v; continue; }
         if (const char* v = option(argc, argv, i, "--move-first")) { moveFirst = v; continue; }
+        if (const char* v = option(argc, argv, i, "--wake"))      { wake = v; continue; }
         if (const char* v = option(argc, argv, i, "--grid"))      { grid = v; continue; }
         if (const char* v = option(argc, argv, i, "--max-steps")) { maxSteps = std::atoi(v); continue; }
         if (const char* v = option(argc, argv, i, "--trace"))     { trace = v; continue; }
@@ -650,6 +658,16 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // On by default, unlike the other switches here. Those add a behaviour
+    // worth measuring before trusting; this removes a failure — a blank screen
+    // the model cannot interpret — and its cost when unnecessary is one second
+    // and a keystroke that does nothing.
+    if (wake.empty()) wake = settings.valueOr("wake", "on");
+    if (wake != "on" && wake != "off") {
+        std::cerr << "ERROR: --wake expects on or off\n";
+        return 2;
+    }
+
     // Must land before makeComputerTools(): vnc_screenshot's description
     // explains the grid, so it has to know whether there is one.
     if (grid.empty()) grid = settings.valueOr("screenshot-grid", "0");
@@ -785,6 +803,33 @@ int main(int argc, char** argv) {
                 target.connectWebSocket(ticket.websocketUrl());
             } else {
                 target.connect(vnc);
+            }
+
+            // A guest left alone blanks its screen, and a black first frame is
+            // the worst thing to hand a model that can only see through
+            // screenshots: it shows nothing, and working out that a keystroke
+            // might reveal something is a lot to ask of a picture with nothing
+            // in it. Left Shift is the conventional nudge — it dismisses a
+            // blank screen saver, types nothing and activates nothing, so
+            // sending it to a guest that was already awake costs a second and
+            // changes nothing.
+            //
+            // Here rather than after the first connect, because this is also
+            // the reconnect path, and a reconnect follows the longest idle in
+            // the run — exactly when the screen has had time to blank.
+            if (wake == "on") {
+                constexpr uint32_t kShiftLeft = 0xFFE1;  // X11 keysym
+                target.sendKey(kShiftLeft, true);
+                std::this_thread::sleep_for(std::chrono::milliseconds(60));
+                target.sendKey(kShiftLeft, false);
+                // The guest redraws in its own time; asking for the screen
+                // before it has would capture the blank one we just dismissed.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+                target.pump(std::chrono::milliseconds(200));
+                // It is input the model did not ask for, so the trace says it
+                // happened. A keystroke nobody can account for later is worse
+                // than the blank screen it was sent to fix.
+                mclog("Sent a wake keystroke (left Shift) after connecting\n");
             }
         };
 

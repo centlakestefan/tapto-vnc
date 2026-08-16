@@ -241,6 +241,7 @@ The store is shared with `tapto-code`, which can write it for you:
 | `--grid 50` | rule and grid the full screenshots too, every 50 px — an experiment, off by default |
 | `--resolution 1280x1024` | set the guest's screen size before connecting |
 | `--thinking on\|off` | ask the model to reason before acting |
+| `--wake off` | skip the left-Shift nudge sent after connecting to dismiss a blank screen saver (on by default) |
 | `--layout <name>` | keyboard layout of the remote machine |
 | `--type-test <text>` | type a string and save the result, no model involved |
 | `--quiet` | hide the model's intermediate reasoning |
