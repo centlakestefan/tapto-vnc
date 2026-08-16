@@ -16,6 +16,14 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The build stamps the binary with `git describe --tags`, which needs
+          # the tags and the history between them. checkout's default is a
+          # depth-1 clone with no tags fetched at all, so a release build here
+          # would report a bare hash where it should name its version. Nothing
+          # fails in that case, which is exactly why it would go unnoticed —
+          # the smoke test below asserts the stamp instead.
+          fetch-depth: 0
 
       # OpenSSL for the HTTPS provider APIs and for DES in VNC authentication;
       # zlib for the ZRLE encoding.
@@ -52,6 +60,16 @@ jobs:
           count=$(jq length tools.json)
           echo "tool definitions: $count"
           test "$count" -ge 9
+
+          # The version stamp is only as good as the checkout it was taken
+          # from, and a wrong one is silent: every trace would name a build
+          # that cannot be found. "no-git" means the history or the tags did
+          # not arrive.
+          version=$(./build/tapto-vnc --version)
+          echo "$version"
+          case "$version" in
+            *no-git*) echo "::error::version stamp has no repository to describe"; exit 1 ;;
+          esac
 
       - name: Smoke test (Windows)
         if: runner.os == 'Windows'
