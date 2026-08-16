@@ -55,6 +55,11 @@ carries everything else.
   label, size and aim point. Assembling frames into a contact sheet or a movie
   needs facts a filename cannot carry — not least that zooms and full screens
   are different sizes. ([ba61887])
+- `--wake` (config key `wake`, **on** by default) sends left Shift after
+  connecting, so a guest that has blanked its screen is awake before the first
+  screenshot rather than presenting the model with a black picture it cannot
+  interpret. It runs on reconnect too, which follows the longest idle in a run.
+  `--wake off` restores the old behaviour. ([401a58b])
 - Screenshot numbering continues where a directory left off, so a session
   stopped and restarted against the same directory extends one timeline instead
   of overwriting it from `0001` again. Each process appends a start record
@@ -183,3 +188,4 @@ screenshots as tools. ([3d11be9])
 [ba61887]: https://github.com/centlakestefan/tapto-vnc/commit/ba61887
 [75842dd]: https://github.com/centlakestefan/tapto-vnc/commit/75842dd
 [c8dfd86]: https://github.com/centlakestefan/tapto-vnc/commit/c8dfd86
+[401a58b]: https://github.com/centlakestefan/tapto-vnc/commit/401a58b
