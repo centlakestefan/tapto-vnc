@@ -105,17 +105,42 @@ std::string slugify(const std::string& text) {
     return out.empty() ? "screenshot" : out;
 }
 
+// What a saved frame is, beyond its pixels.
+//
+// A directory of pictures is enough to look through by hand and not enough to
+// assemble anything from. Zooms are a different size from full screens, so they
+// cannot join the same video track unaltered; a frame showing where a click was
+// aimed is not the same kind of evidence as the one showing what the click did;
+// and every frame stands for a stretch of real time that varies from 200 ms to
+// several minutes of the model thinking. None of that is recoverable from a
+// filename, so it goes in the sidecar index instead.
+struct FrameMeta {
+    const char* kind  = "full";     // "full" or "zoom" — differing pixel sizes
+    const char* phase = "";         // "before" / "after" for an action's pair
+    int width = 0, height = 0;      // of the image, margins included
+    const VncSession::Marker* marker = nullptr;   // where a click was aimed
+};
+
 // Writes the screenshot alongside the run, if a directory was configured.
 // Numbered so the sequence is obvious, and labelled so a frame can be found
-// without opening every file.
+// without opening every file. Each one also appends a line to frames.jsonl,
+// which is what a later pass — a contact sheet, a movie — reads instead of
+// guessing from filenames.
 void saveScreenshot(Context& context, const std::vector<uint8_t>& png,
-                    const std::string& label) {
+                    const std::string& label, const FrameMeta& meta = {}) {
     if (!context.has(keys::kScreenshotDir)) return;
     const std::string dir = context.get<std::string>(keys::kScreenshotDir);
     if (dir.empty() || png.empty()) return;
 
     static int sequence = 0;
     ++sequence;
+
+    // Relative to the first frame rather than the wall clock: what a movie
+    // needs is how long each frame stood for, and the run's own start is the
+    // only zero every frame shares.
+    static const auto origin = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - origin).count();
 
     try {
         std::filesystem::create_directories(dir);
@@ -126,6 +151,24 @@ void saveScreenshot(Context& context, const std::vector<uint8_t>& png,
         std::ofstream file(path, std::ios::binary);
         file.write(reinterpret_cast<const char*>(png.data()),
                    static_cast<std::streamsize>(png.size()));
+        file.close();
+
+        json entry{
+            {"seq", sequence},
+            {"file", name.str()},
+            {"ms", elapsed},
+            {"kind", meta.kind},
+            {"label", label},
+            {"width", meta.width},
+            {"height", meta.height},
+        };
+        if (meta.phase && *meta.phase) entry["phase"] = meta.phase;
+        if (meta.marker) entry["aim"] = json{{"x", meta.marker->x}, {"y", meta.marker->y}};
+
+        // One object per line, appended as the run goes, so a run that dies
+        // half way still leaves a readable index of what it managed to save.
+        std::ofstream index(std::filesystem::path(dir) / "frames.jsonl", std::ios::app);
+        index << entry.dump() << "\n";
     } catch (const std::exception&) {
         // Saving is a diagnostic convenience; never fail the tool call over it.
     }
@@ -175,16 +218,42 @@ int g_screenshotGrid = 0;
 // than comparing the pixel value to zero.
 bool gridOn() { return g_screenshotGrid > 0; }
 
-// Captures the screen and parks it for the backend to deliver.
+// Saves the screen an action is about to change, with a dot on the point it is
+// aimed at — the "before" half of a pair whose "after" half is the capture that
+// follows the action.
 //
-// `marker`, when set, puts a dot at that point in the copy written to disk —
-// and only there. The model is deliberately shown the unmarked image: these
-// runs exist to measure how accurately it aims, and handing it a picture of
-// where its last shot landed is feedback that would alter the behaviour being
-// measured. It would also be one more thing on screen to reason about, and
-// easily misread as part of the remote desktop.
+// Deliberately not a fresh capture. This renders the composite as it already
+// stands, which is the picture the model was looking at when it chose the
+// coordinate, and it is that picture the dot has to sit on: a click that misses
+// misses the button *where the model saw it*, and re-capturing first would show
+// the dot against a screen it never reasoned about. Rendering costs no round
+// trip and no settle, so an action is not slowed down by being filmed.
+//
+// The frame is written to disk and never shown to the model. These runs exist
+// to measure how accurately it aims, and handing it a picture of where its last
+// shot landed is feedback that would alter the behaviour being measured; it
+// would also be one more thing on screen to reason about, and easily misread as
+// part of the remote desktop.
+void saveAimFrame(Context& context, VncSession& session, int x, int y,
+                  const std::string& label) {
+    if (!context.has(keys::kScreenshotDir)) return;
+    const VncSession::Marker marker{x, y, 5};
+    VncSession::Rect whole;
+    // Gridded to match what the model saw, so the frame on disk and the frame
+    // it reasoned about are the same picture apart from the dot.
+    std::vector<uint8_t> png =
+        session.screenshotRegionPng(whole, 1, &marker, gridOn(), g_screenshotGrid);
+    FrameMeta meta;
+    meta.phase  = "before";
+    meta.marker = &marker;
+    meta.width  = (gridOn() ? VncSession::rulerMarginLeft(1) : 0) + session.width();
+    meta.height = (gridOn() ? VncSession::rulerMarginTop(1)  : 0) + session.height();
+    saveScreenshot(context, png, label, meta);
+}
+
+// Captures the screen and parks it for the backend to deliver.
 std::string captureInto(Context& context, VncSession& session, const std::string& label,
-                        const VncSession::Marker* marker = nullptr) {
+                        const char* phase = "") {
     const bool ok = session.capture(kCaptureTimeout, kActionSettle);
 
     // Any action invalidates the last zoom: the screen it showed is gone.
@@ -207,18 +276,11 @@ std::string captureInto(Context& context, VncSession& session, const std::string
     }
     shot.label = label;
 
-    if (marker && context.has(keys::kScreenshotDir)) {
-        // Rendered a second time rather than drawn onto shot.png, which is
-        // already PNG-encoded. Only pays that cost when saving is switched on.
-        // Gridded to match what the model saw, so a frame on disk and the frame
-        // it reasoned about are the same picture apart from the dot.
-        VncSession::Rect whole;
-        saveScreenshot(context,
-                       session.screenshotRegionPng(whole, 1, marker, gridOn(), g_screenshotGrid),
-                       label);
-    } else {
-        saveScreenshot(context, shot.png, label);
-    }
+    FrameMeta meta;
+    meta.phase  = phase;
+    meta.width  = shot.width;
+    meta.height = shot.height;
+    saveScreenshot(context, shot.png, label, meta);
     putToolImage(context, shot);
 
     std::ostringstream out;
@@ -342,13 +404,25 @@ constexpr const char* kRepeatClickNote =
     "effect you wanted, clicking it again will not either. Zoom on your target and look "
     "at where it actually is before clicking again.";
 
+// Checks the button and repeat count. Separate from delivery because the
+// "before" frame is written first, and a frame of a click that was never
+// delivered would leave a pair with no second half.
+std::string clickArgsError(const std::string& buttonName, int clicks) {
+    if (input::buttonMaskForName(buttonName) == 0) {
+        return "unknown button '" + buttonName + "'; use left, middle or right";
+    }
+    if (clicks < 1 || clicks > 3) return "clicks must be between 1 and 3";
+    return {};
+}
+
 // Delivers a click at an already-resolved screen coordinate. Returns an error
 // message, or empty on success.
 std::string sendClick(VncSession& session, int x, int y,
                       const std::string& buttonName, int clicks) {
+    if (const std::string error = clickArgsError(buttonName, clicks); !error.empty()) {
+        return error;
+    }
     const uint8_t mask = input::buttonMaskForName(buttonName);
-    if (mask == 0) return "unknown button '" + buttonName + "'; use left, middle or right";
-    if (clicks < 1 || clicks > 3) return "clicks must be between 1 and 3";
 
     const auto px = static_cast<uint16_t>(x);
     const auto py = static_cast<uint16_t>(y);
@@ -401,15 +475,23 @@ std::string doClick(Context& context, const json& input) {
     const std::string buttonName = stringField(input, "button", "left");
     const int clicks = std::max(1, intField(input, "clicks", 1));
 
+    if (const std::string bad = clickArgsError(buttonName, clicks); !bad.empty()) {
+        return "ERROR: " + bad;
+    }
+
     const bool repeat = noteClick(x, y);
+
+    std::ostringstream aim;
+    aim << "About to " << buttonName << "-click (" << x << "," << y << ")";
+    saveAimFrame(context, session, x, y, aim.str());
+
     const std::string error = sendClick(session, x, y, buttonName, clicks);
     if (!error.empty()) return "ERROR: " + error;
 
     std::ostringstream label;
     label << (clicks > 1 ? std::to_string(clicks) + "x " : "") << buttonName
           << "-clicked at (" << x << "," << y << ")";
-    const VncSession::Marker marker{x, y, 5};
-    std::string result = captureInto(context, session, label.str(), &marker);
+    std::string result = captureInto(context, session, label.str(), "after");
     if (repeat) result += kRepeatClickNote;
     return result;
 }
@@ -465,7 +547,11 @@ std::string doZoom(Context& context, const json& input) {
     shot.width  = VncSession::rulerMarginLeft(kZoomScale) + region.width  * kZoomScale;
     shot.height = VncSession::rulerMarginTop(kZoomScale)  + region.height * kZoomScale;
     shot.label  = label.str();
-    saveScreenshot(context, shot.png, shot.label);
+    FrameMeta meta;
+    meta.kind   = "zoom";
+    meta.width  = shot.width;
+    meta.height = shot.height;
+    saveScreenshot(context, shot.png, shot.label, meta);
     putToolImage(context, shot);
 
     std::ostringstream out;
@@ -508,6 +594,14 @@ std::string doDrag(Context& context, const json& input) {
     const uint8_t mask = input::buttonMaskForName(buttonName);
     if (mask == 0) return "ERROR: unknown button '" + buttonName + "'";
 
+    // Marked at the point it grabs: that is the position that has to be right
+    // for the drag to pick up the thing it meant to, and the one the result
+    // frame can no longer show.
+    std::ostringstream aim;
+    aim << "About to drag from (" << fromX << "," << fromY << ") to ("
+        << toX << "," << toY << ")";
+    saveAimFrame(context, session, fromX, fromY, aim.str());
+
     session.sendPointer(0, static_cast<uint16_t>(fromX), static_cast<uint16_t>(fromY));
     session.sendPointer(mask, static_cast<uint16_t>(fromX), static_cast<uint16_t>(fromY));
 
@@ -524,7 +618,7 @@ std::string doDrag(Context& context, const json& input) {
 
     std::ostringstream label;
     label << "Dragged from (" << fromX << "," << fromY << ") to (" << toX << "," << toY << ")";
-    return captureInto(context, session, label.str());
+    return captureInto(context, session, label.str(), "after");
 }
 
 std::string doScroll(Context& context, const json& input) {

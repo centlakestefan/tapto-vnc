@@ -517,16 +517,40 @@ zoom was available: it correctly volunteered "the file `bazel-8.5.0-...` is
 currently selected instead of `readme`". Reading is reliable; recall and
 self-explanation are not.
 
-Run with `--screenshots <dir>`. Click frames carry a **red dot** at the aim
-point, written only to the file on disk — never to the image the model sees,
-since showing it where its last shot landed would feed back into the behaviour
-being measured. Filenames record the geometry, so a run can be reconstructed
-arithmetically without opening anything:
+Run with `--screenshots <dir>`. A click writes **two** frames: the screen as it
+was, with a **red dot** at the aim point, and then the screen the click
+produced. Both are files on disk only — the model is never shown the dot, since
+showing it where its last shot landed would feed back into the behaviour being
+measured.
+
+The pairing is the point. A dot on the *result* answers a question nobody
+asked: by then the menu has opened or the window has closed, and the button the
+click was aiming at may not be on the screen any more. The dot belongs on the
+picture the model was looking at when it chose the coordinate, because that is
+the screen the miss happened on — the button is still there, 60 px above the
+dot, and the error is visible instead of inferred. Drag frames mark the point
+it grabs, for the same reason.
+
+The "before" frame is rendered from the composite as it already stands, without
+capturing first: no round trip, no settle, and — more importantly — no risk of
+showing the dot against a screen the model never reasoned about.
+
+Filenames record the geometry, so a run can be reconstructed arithmetically
+without opening anything:
 
 ```
 0036-zoomed-3x-on-320x100-at-520-620.png     region (520,620) 320x100 at 3x
-0037-left-clicked-at-750-660.png             the click that followed
+0037-about-to-left-click-750-660.png         where it aimed, on the screen it saw
+0038-left-clicked-at-750-660.png             what that click produced
 ```
+
+Alongside them, `frames.jsonl` carries one object per frame — sequence, file,
+milliseconds since the first frame, `kind` (`full` or `zoom`), `phase`, label,
+image size, and the aim point where there is one. It exists because the things
+a later pass needs are the things a filename cannot carry: zooms are a
+different size from full screens, so they cannot join a video track unaltered,
+and every frame stands for a stretch of real time that runs from 200 ms to
+several minutes of the model thinking.
 
 The zoom filename records the region's **top-left corner**, not the point the
 model asked for — that is what was rendered, and it is what the error has to be

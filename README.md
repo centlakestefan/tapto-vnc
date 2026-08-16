@@ -234,7 +234,7 @@ The store is shared with `tapto-code`, which can write it for you:
 
 | Flag | Why |
 | --- | --- |
-| `--screenshots <dir>` | save every frame, with a red dot marking where each click aimed |
+| `--screenshots <dir>` | save every frame — a click writes the screen it aimed at with a red dot, then the screen it produced — plus `frames.jsonl` describing them |
 | `--trace <path>` | request/response diagnostics, including cache usage |
 | `--require-zoom on` | refuse a click unless a zoom containing it came first — for weaker models |
 | `--move-first on` | ask the model to hover a point and see what reacts before clicking it — advice, not a gate |
