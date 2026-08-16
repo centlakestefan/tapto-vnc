@@ -359,6 +359,11 @@ def main():
                         help="minimum hold on an 'about to click' frame")
     parser.add_argument("--hold-ms", type=int, default=3000,
                         help="how long the final frame stays up")
+    parser.add_argument("--fps", type=int, default=12,
+                        help="constant frame rate; each still is repeated to fill its time")
+    parser.add_argument("--vfr", action="store_true",
+                        help="one sample per still with a long duration instead. Smaller, and"
+                             " some players show black until several samples have arrived")
     parser.add_argument("--zooms", choices=("fit", "skip"), default="fit",
                         help="what to do with zoom frames, which are not screen-sized")
     parser.add_argument("--quiet", action="store_true")
@@ -417,7 +422,7 @@ def main():
 
     out_path = directory / args.out
     container = av.open(str(out_path), mode="w", options={"movflags": "+faststart"})
-    stream = container.add_stream("libx264", rate=Fraction(30, 1))
+    stream = container.add_stream("libx264", rate=Fraction(args.fps, 1))
     stream.width, stream.height = out_w, out_h
     stream.pix_fmt = "yuv420p"
     stream.codec_context.time_base = TIME_BASE
@@ -441,8 +446,38 @@ def main():
     pts = 0
     written = 0
     fitted = 0
+    samples = 0
     started = time.monotonic()
     canvas = None
+
+    # A still that stays on screen for two and a half seconds can be one sample
+    # two and a half seconds long, or thirty samples of a twelfth of a second
+    # each. The file is smaller the first way and it is what this did at first,
+    # but players disagree about when to present a sample whose successor has
+    # not arrived: two of them opened the movie on black until several samples
+    # were in — four seconds on one run, fourteen on another, both exactly the
+    # sum of the first few durations.
+    #
+    # So the stills are repeated instead. x264 encodes a frame identical to its
+    # predecessor as almost nothing, so the cost is nowhere near the thirty-fold
+    # the sample count suggests — measured at about two thirds larger on a real
+    # run, 1.37MB against 0.83MB. That is the price of the movie playing
+    # everywhere; --vfr buys the bytes back for a file you know your own player
+    # will handle.
+    step = 1000 // args.fps
+
+    def emit(image, at, hold_ms):
+        nonlocal samples
+        frame = av.VideoFrame.from_image(image)
+        repeats = 1 if args.vfr else max(1, round(hold_ms / step))
+        for repeat in range(repeats):
+            frame.pts = at + (repeat * step if not args.vfr else 0)
+            frame.time_base = TIME_BASE
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            samples += 1
+        return at + (hold_ms if args.vfr else repeats * step)
+
     try:
         for frame, path, held, prompt, commentary in chosen:
             with Image.open(path) as opened:
@@ -455,27 +490,16 @@ def main():
             if (canvas.width, canvas.height) != (out_w, out_h):
                 canvas = canvas.resize((out_w, out_h), Image.LANCZOS)
 
-            video_frame = av.VideoFrame.from_image(canvas)
-            video_frame.pts = pts
-            video_frame.time_base = TIME_BASE
-            for packet in stream.encode(video_frame):
-                container.mux(packet)
-            pts += held
+            pts = emit(canvas, pts, held)
             written += 1
             if not args.quiet and written % 25 == 0:
                 print(f"  {written}/{len(chosen)} frames")
 
-        # A frame's duration is implied by the next frame's timestamp, so the
+        # A sample's duration is implied by the next sample's timestamp, so the
         # last one has none: without this the movie cuts the moment the final
-        # picture appears. Repeating it gives the ending something to sit on,
-        # and an identical frame costs the encoder almost nothing.
+        # picture appears. Holding it gives the ending something to sit on.
         if canvas is not None:
-            video_frame = av.VideoFrame.from_image(canvas)
-            video_frame.pts = pts
-            video_frame.time_base = TIME_BASE
-            for packet in stream.encode(video_frame):
-                container.mux(packet)
-            pts += args.hold_ms
+            pts = emit(canvas, pts, args.hold_ms)
 
         for packet in stream.encode(None):
             container.mux(packet)
@@ -486,7 +510,8 @@ def main():
         real_ms = frames[-1]["epoch_ms"] - frames[0]["epoch_ms"]
         print()
         print(f"wrote {out_path}")
-        print(f"  frames    {written} of {len(frames)} ({fitted} fitted from another size)")
+        print(f"  frames    {written} of {len(frames)} ({fitted} fitted from another size)"
+              + ("" if args.vfr else f", {samples} samples at {args.fps} fps"))
         print(f"  plays in  {pts / 60000:.1f} min, from {real_ms / 60000:.1f} min of real time")
         print(f"  size      {out_path.stat().st_size / 1e6:.1f} MB at {out_w}x{out_h},"
               f" crf {args.crf}, encoded in {time.monotonic() - started:.0f}s")
