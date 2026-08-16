@@ -208,10 +208,47 @@ const char* kGridGuidance =
     "box is ticked. For that you still need vnc_zoom, and the paragraphs below still "
     "apply.\n";
 
-const char* kSystemPromptRest = R"(- A full screenshot has to show the whole screen at once, so small or tightly packed things — rows in a file list, items in a menu, buttons along the bottom of a dialog — are hard to tell apart and easy to misjudge. Do not estimate their position from the full screenshot. Use vnc_zoom on the area around them instead: it returns that area enlarged, with a numbered ruler along the top and left edge and a grid drawn from it, all labelled in screen coordinates.
+const char* kSystemPromptZoom = R"(- A full screenshot has to show the whole screen at once, so small or tightly packed things — rows in a file list, items in a menu, buttons along the bottom of a dialog — are hard to tell apart and easy to misjudge. Do not estimate their position from the full screenshot. Use vnc_zoom on the area around them instead: it returns that area enlarged, with a numbered ruler along the top and left edge and a grid drawn from it, all labelled in screen coordinates.
 - Read the target's position off that grid rather than judging it. Find which gridlines bracket the thing you want, read their numbers from the rulers, and give that position to vnc_click. This is reading, not estimating — if you find yourself guessing a coordinate, zoom on it and read it instead.
 - Every zoom shows the same 320x100 area at the same magnification, so there is nothing to adjust: you choose only where to point it, and it is centred there. If what you want is not in the picture, point it somewhere else rather than reasoning about what lies outside.
-- If a click lands in the wrong place, do not adjust it by guesswork and do not repeat it. Zoom on the target again and read its coordinates.
+)";
+
+// Spliced in when --move-first is on, which is the second reason the prompt is
+// in pieces. It belongs here, after the model has been told how to arrive at a
+// coordinate and before it is told what to do about a click that went wrong —
+// this is the step that stops there being one.
+//
+// The idea is the feedback loop a person uses without thinking: put the pointer
+// on the target, see the control react, then commit. A hover reaction is the
+// guest asserting what is under the pointer, which is stronger evidence than
+// the model's own reading of a picture, because it cannot be a misjudged
+// position. The asymmetry is what pays for the extra step: a wrong move costs
+// nothing, while a wrong click has opened the wrong installer, dismissed a
+// dialog and pushed a wizard backwards in earlier runs, each costing five steps
+// or more to undo.
+//
+// Off by default because it is measured once, not established, and it spends a
+// step on every click. Prompt only: nothing refuses a click that skipped the
+// move, unlike --require-zoom. If it earns its keep, the gate is the next step.
+const char* kMoveGuidance =
+    "- Move before you click. Call vnc_move to the position you are about to click, look at "
+    "the screenshot it returns, and only then call vnc_click at that same position. This "
+    "costs one extra step and it is worth it: a wrong move costs nothing, a wrong click can "
+    "open the wrong file, dismiss a dialog or undo a step.\n"
+    "- What to look for in that screenshot: most controls react to the pointer resting on "
+    "them. A button lightens or draws a border, a list row highlights, a close button turns "
+    "red, a link underlines. That reaction is the machine itself telling you what is under "
+    "the pointer — better evidence than your own reading of the picture, because it cannot "
+    "be a misjudgement of position. If the thing you are aiming at reacts, click. If nothing "
+    "reacts, or something next to your target reacts instead, you are not where you think: "
+    "zoom, read the position again, and move again before clicking.\n"
+    "- Some things do not react at all — a desktop icon, a plain text field, empty space. "
+    "Then use the pointer itself: it is drawn in the screenshot, so check it is sitting on "
+    "the target before you click.\n"
+    "- Moving can also change the screen on its own: a menu can open on hover, a tooltip can "
+    "appear. That is information, not a mistake — read it and carry on.\n";
+
+const char* kSystemPromptRest = R"(- If a click lands in the wrong place, do not adjust it by guesswork and do not repeat it. Zoom on the target again and read its coordinates.
 - Zooming is not only about aiming, it is also how you make sure you have the right thing. Neighbouring entries in a list often have names that differ only slightly — the same word with a version number, a suffix or a different extension — and adjacent rows sit about twenty pixels apart, so opening the wrong one is easy and looks like success afterwards. Read the whole row rather than a name alone: the other columns, such as type and size, are usually what tells two similar entries apart, and one zoom takes in about five rows. Confirm you have the right one before you open it.
 - Aim at the largest part of whatever you are clicking, not its smallest visible detail. A big target absorbs a small error; a small one does not.
 - This matters most for checkboxes and radio buttons. The little square or circle is only a few pixels across, but the text label beside it belongs to the same control and clicking the text toggles it just the same — and the label is usually many times wider. So to tick "I accept the terms in the License Agreement", click the middle of that sentence rather than trying to hit the box. The same goes for a row in a list: click its name, which is wide, rather than its icon, which is not.
@@ -293,6 +330,13 @@ void usage(const char* argv0) {
         << "                      that region. Stops a model guessing positions\n"
         << "                      from a full screenshot; costs one extra step per\n"
         << "                      click. Worth it for local models.\n"
+        << "  --move-first <m>    on|off (config key move-first, default off).\n"
+        << "                      Asks the model to vnc_move to a point and look\n"
+        << "                      at what reacts before clicking it. Advice, not a\n"
+        << "                      gate: nothing refuses a click that skipped it.\n"
+        << "                      Costs a step per click and is measured once, not\n"
+        << "                      established — try it where wrong clicks are\n"
+        << "                      expensive.\n"
         << "  --grid <px>         Rule and grid the full screenshots every <px>\n"
         << "                      screen pixels, labelled in screen coordinates\n"
         << "                      (config key screenshot-grid; 0/off by default,\n"
@@ -408,7 +452,7 @@ int main(int argc, char** argv) {
     tapto::VCenterCredentials vcenter;
     // Left empty so config can supply them; CLI flags win when present.
     std::string vmName, model, effort, trace, task, provider, layout, typeTest, altcode, color,
-                screenshotDir, providerUrl, resolution, thinking, requireZoom, grid;
+                screenshotDir, providerUrl, resolution, thinking, requireZoom, moveFirst, grid;
     int maxSteps = 0;
     int resolutionWidth = 0, resolutionHeight = 0;
     bool quiet = false;
@@ -447,6 +491,7 @@ int main(int argc, char** argv) {
         if (const char* v = option(argc, argv, i, "--effort"))    { effort = v; continue; }
         if (const char* v = option(argc, argv, i, "--thinking"))  { thinking = v; continue; }
         if (const char* v = option(argc, argv, i, "--require-zoom")) { requireZoom = v; continue; }
+        if (const char* v = option(argc, argv, i, "--move-first")) { moveFirst = v; continue; }
         if (const char* v = option(argc, argv, i, "--grid"))      { grid = v; continue; }
         if (const char* v = option(argc, argv, i, "--max-steps")) { maxSteps = std::atoi(v); continue; }
         if (const char* v = option(argc, argv, i, "--trace"))     { trace = v; continue; }
@@ -595,6 +640,12 @@ int main(int argc, char** argv) {
         return 2;
     }
     tapto::setRequireZoom(requireZoom == "on");
+
+    if (moveFirst.empty()) moveFirst = settings.valueOr("move-first", "off");
+    if (moveFirst != "on" && moveFirst != "off") {
+        std::cerr << "ERROR: --move-first expects on or off\n";
+        return 2;
+    }
 
     // Must land before makeComputerTools(): vnc_screenshot's description
     // explains the grid, so it has to know whether there is one.
@@ -811,9 +862,13 @@ int main(int argc, char** argv) {
         else if (thinking == "off") client->setThinkingBudget(0);
 
         // Spliced rather than always present: telling a model to read rulers
-        // that are not in the picture is worse than saying nothing at all.
+        // that are not in the picture is worse than saying nothing at all, and
+        // the move-first paragraphs are a change of method rather than an extra
+        // hint — a run that is not using them should not be reading them.
         std::string systemPrompt = kSystemPrompt;
         if (tapto::screenshotGrid() > 0) systemPrompt += kGridGuidance;
+        systemPrompt += kSystemPromptZoom;
+        if (moveFirst == "on") systemPrompt += kMoveGuidance;
         systemPrompt += kSystemPromptRest;
         client->setSystemPrompt(systemPrompt);
         client->start();

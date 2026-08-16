@@ -158,9 +158,11 @@ whether it saw something invites yes; asking it to describe a distinguishing
 feature ("what shape is the symbol?") made it look again and find the error
 itself.
 
-`vnc_move` exists for this and no autonomous run has ever used it. For anything
-irreversible it is the cheapest check available: move, look for the highlight,
-then click.
+`vnc_move` exists for this and no autonomous run has ever reached for it
+unprompted. For anything irreversible it is the cheapest check available: move,
+look for the highlight, then click. `--move-first on` asks for it on every
+click — see "Move before clicking" below for what that costs and what is still
+unmeasured about it.
 
 ### It answers in pixels, not normalised units
 
@@ -405,6 +407,47 @@ list out of five, and the zoom-to-identify rule stands unchanged. Both the
 system prompt and the tool description say so when the grid is on, because a
 model handed a measuring instrument will otherwise assume it has been handed a
 better picture.
+
+## Move before clicking — open
+
+`--move-first on` (config key `move-first`, off by default) adds four
+paragraphs to the system prompt asking the model to `vnc_move` to a point, look
+at the screenshot that comes back, and only then click the same point.
+
+It is prompt only. Nothing refuses a click that skipped the move, which is the
+difference from the zoom gate above and the reason the flag is not called
+`--require-move`. The mechanism would be the same shape — a flag cleared by
+every action, a check that the click matches the move — and it is deliberately
+not built yet, because a rule the model follows because it was asked is cheap
+to withdraw and a rule enforced in code is not.
+
+**Why it might be worth a step.** A hover reaction is the *guest* saying what
+is under the pointer: a button lightens, a row highlights, a close button turns
+red. That is a different kind of evidence from the model's reading of a
+picture, and it is the kind that cannot be a misjudged position — see "Verify
+with the pointer, not by asking" above, where the model reported the close
+button turning red and the highlight sat at 829..874 against an answer of 855.
+The asymmetry pays for the round trip: a wrong move costs nothing, while a
+wrong click has opened an installer for the wrong file, dismissed a dialog and
+pushed a wizard backwards in earlier runs, each of those five steps or more to
+undo.
+
+The prompt also covers the case with no reaction — a desktop icon, a text
+field, empty space — where the check is the pointer itself, since the server
+draws it into the framebuffer. And it says that a menu opening on hover is
+information rather than a mistake, because a model told to be careful will
+otherwise treat a screen that changed under it as its own error.
+
+**Why it is off.** One measurement is not a result. The cost is certain — a
+step and a screenshot per click, on top of the zoom the same click already
+needs — and the benefit is a class of error that the zoom gate already reduces.
+The models it should help most are the local ones, which are also the ones for
+which an extra round trip hurts most.
+
+**What would settle it.** The same task run twice on one model with the flag on
+and off, counting clicks that landed on the wrong control rather than clicks
+that missed by pixels: the hover check is evidence about *what* is under the
+pointer, so a wrong-row click is what it should catch and a 20 px miss is not.
 
 ## The design this replaced
 
