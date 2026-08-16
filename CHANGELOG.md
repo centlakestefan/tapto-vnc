@@ -25,6 +25,28 @@ carries everything else.
 
 ## [Unreleased]
 
+### Added
+
+- `--grid <px>` (config key `screenshot-grid`, `0` by default) rules and grids
+  the full screenshots in screen coordinates, the way `vnc_zoom` already does.
+  An open experiment: at 1:1 the labels are least legible exactly where the
+  picture is least detailed, so measure before trusting it. ([38ae1c2])
+- `--move-first on` (config key `move-first`, off by default) asks the model to
+  `vnc_move` to a point and read what reacts before clicking it. Advice, not a
+  gate — nothing refuses a click that skipped it. ([65b225d])
+
+### Changed
+
+- **Breaking:** `vnc_zoom` takes `x` and `y` and nothing else, centring a fixed
+  320x100 view at 3x. Every zoom is now the same picture with the same 10 px
+  ruler pitch; the previous per-call rectangle produced a spacing that changed
+  with every call, which models misread. ([5b02ffd])
+- **Breaking:** `vnc_click_zoom` is gone and so is `--coord-span`. There is one
+  coordinate system — screen pixels — instead of two live at once. ([fce9dee])
+
+Both are changes to the tools the model sees, so prompts and measurements taken
+against the old schema do not carry over.
+
 ## [0.2.0] — 2026-08-15
 
 ### Added
@@ -91,3 +113,7 @@ screenshots as tools. ([3d11be9])
 [af7a6b4]: https://github.com/centlakestefan/tapto-vnc/commit/af7a6b4
 [7e53812]: https://github.com/centlakestefan/tapto-vnc/commit/7e53812
 [cef058c]: https://github.com/centlakestefan/tapto-vnc/commit/cef058c
+[fce9dee]: https://github.com/centlakestefan/tapto-vnc/commit/fce9dee
+[38ae1c2]: https://github.com/centlakestefan/tapto-vnc/commit/38ae1c2
+[5b02ffd]: https://github.com/centlakestefan/tapto-vnc/commit/5b02ffd
+[65b225d]: https://github.com/centlakestefan/tapto-vnc/commit/65b225d
