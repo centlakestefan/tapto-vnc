@@ -458,41 +458,72 @@ def main():
         return max(args.read_min_ms,
                    min(cap or args.read_max_ms, int(1000 * len(text) / args.read_cps)))
 
-    beats = []                 # (path, frame, held, prompt, commentary)
+    # A reading beat shows the screen the words were written about, and which
+    # screen that is depends on when they were written.
+    #
+    # Reasoning and prose are written while the model is looking at the result
+    # of its last action and before it takes the next one, so they belong over
+    # the previous screenshot: read, then watch the click happen.
+    #
+    # A reply is written after the final action, about the state it produced, so
+    # it belongs over this frame's own screenshot. Putting it over the previous
+    # one meant the closing account of a task played across the aim shot with
+    # the red dot still on it, while the screen it was describing waited its
+    # turn behind sixteen seconds of text. So for a reply the order inverts:
+    # watch the last action land, then read what it concluded, over the picture
+    # that proves it.
+    beats = []                 # (path, frame, held, prompt, commentary, mode)
     previous_path = None
     previous_text = (None, None)
+    previous_commentary = None
     for index, (frame, path, held, prompt, commentary) in enumerate(chosen):
         panel_text = (prompt, commentary[1] if commentary else None)
-        if args.read_cps and previous_path and panel_text != previous_text:
-            # Only what is actually new has to be read: a fresh task is read in
-            # full, but when the task is unchanged the reading beat is paced by
-            # the new commentary alone.
-            fresh = (commentary[1] if commentary else "") if prompt == previous_text[0] \
-                else "".join(part for part in panel_text if part)
-
-            # A closing reply gets a longer ceiling than a passing remark. It is
-            # usually the longest thing written in the run, it is an account of
-            # everything that just happened, and it is the one passage a viewer
-            # has a reason to finish rather than skim.
-            cap = args.reply_max_ms if commentary and commentary[0] == "reply" else None
-            pause = reading_ms(fresh, cap)
-            if pause:
-                beats.append((previous_path, frame, pause, prompt, commentary))
+        kind = commentary[0] if commentary else None
 
         # The end of a turn is a paragraph break, and the movie had none: the
-        # reply's beat ended and the next task appeared while the eye was still
-        # on the old one. Holding the closing frame gives the turn somewhere to
-        # land before the next begins.
+        # next task used to appear while the eye was still on the old one.
         ends_turn = index + 1 == len(chosen) or chosen[index + 1][3] != prompt
-        beats.append((path, frame, held + (args.turn_ms if ends_turn else 0),
-                      prompt, commentary))
-        previous_path, previous_text = path, panel_text
+        settle = args.turn_ms if ends_turn else 0
+
+        if kind == "reply" and previous_path:
+            # Only the screen changes here: the panel still says whatever was
+            # said on the way to this click.
+            beats.append((path, frame, held, prompt, previous_commentary, "watch"))
+            # Then only the panel changes, over the screen just arrived at. A
+            # reply gets a longer ceiling than a passing remark: it is the
+            # longest passage in a run and the one a viewer has reason to finish
+            # rather than skim.
+            pause = reading_ms(commentary[1], args.reply_max_ms)
+            beats.append((path, frame, pause + settle, prompt, commentary, "read"))
+        else:
+            if args.read_cps and previous_path and panel_text != previous_text:
+                # Only what is actually new has to be read: a fresh task is read
+                # in full, but when the task is unchanged the reading beat is
+                # paced by the new commentary alone.
+                fresh = (commentary[1] if commentary else "") \
+                    if prompt == previous_text[0] \
+                    else "".join(part for part in panel_text if part)
+                pause = reading_ms(fresh)
+                if pause:
+                    beats.append((previous_path, frame, pause, prompt, commentary, "read"))
+            beats.append((path, frame, held + settle, prompt, commentary, "watch"))
+
+        previous_path, previous_text, previous_commentary = path, panel_text, commentary
+
+    # A beat is emitted as whole samples, so its length on screen is its hold
+    # rounded to a multiple of one. Both the plan and the encoder round here, or
+    # --list would describe a movie that does not exist: 40ms of error per beat
+    # is nothing, and a hundred and fifty beats of it is seconds.
+    step = 1000 // args.fps
+
+    def on_screen_ms(hold):
+        return hold if args.vfr else max(1, round(hold / step)) * step
 
     if args.list:
         at = 0
-        for path, frame, held, prompt, commentary in beats:
-            reading = path != directory / frame["file"]
-            kind = "read " if reading else "watch"
+        for path, frame, held, prompt, commentary, mode in beats:
+            held = on_screen_ms(held)
+            kind = f"{mode:<5}"
             said = ""
             if commentary:
                 said = f"  [{commentary[0]}] {plain(commentary[1])[:60].replace(chr(10), ' ')}"
@@ -548,8 +579,6 @@ def main():
     # run, 1.37MB against 0.83MB. That is the price of the movie playing
     # everywhere; --vfr buys the bytes back for a file you know your own player
     # will handle.
-    step = 1000 // args.fps
-
     def emit(image, at, hold_ms):
         nonlocal samples
         frame = av.VideoFrame.from_image(image)
@@ -563,7 +592,7 @@ def main():
         return at + (hold_ms if args.vfr else repeats * step)
 
     try:
-        for path, frame, held, prompt, commentary in beats:
+        for path, frame, held, prompt, commentary, mode in beats:
             with Image.open(path) as opened:
                 shot = opened.convert("RGB")
             if shot.size != (screen_w, screen_h):
