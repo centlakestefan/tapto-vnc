@@ -35,6 +35,7 @@ Needs PyAV and Pillow (see tools/requirements.txt):
 
 import argparse
 import json
+import re
 import sys
 import time
 from fractions import Fraction
@@ -151,12 +152,19 @@ def attach_words(frames, words):
 
     The commentary keeps its kind, because reasoning, prose and a final reply
     are different acts and the panel shows them differently.
+
+    A reply is the exception to "at or before". It is written after the turn's
+    last action, so under that rule no frame would ever carry one and the REPLY
+    style would be unreachable — which is exactly what the first run with text
+    showed. But a reply describes the state the turn ended in, and that state is
+    the picture in the last frame, so it belongs there: any reply arriving
+    before the next frame is shown on this one.
     """
     attached = []
     prompt = None
     commentary = None                  # (kind, text)
     position = 0
-    for frame in frames:
+    for index, frame in enumerate(frames):
         while position < len(words) and words[position]["epoch_ms"] <= frame["epoch_ms"]:
             word = words[position]
             if word["event"] == "prompt":
@@ -165,6 +173,18 @@ def attach_words(frames, words):
             else:
                 commentary = (word["event"], word["text"])
             position += 1
+
+        # Look ahead for the turn's conclusion, but only for a reply: the
+        # reasoning that comes after this frame belongs to the next action, not
+        # to this picture.
+        horizon = frames[index + 1]["epoch_ms"] if index + 1 < len(frames) else float("inf")
+        for word in words[position:]:
+            if word["epoch_ms"] >= horizon:
+                break
+            if word["event"] == "reply":
+                commentary = ("reply", word["text"])
+                break
+
         attached.append((prompt, commentary))
     return attached
 
@@ -187,6 +207,21 @@ def plan_durations(frames, args):
             held = max(held, args.aim_ms)
         holds.append(held)
     return holds
+
+
+# The model writes for a terminal, and terminals get markdown: **Next**, *this*,
+# `that`. The panel has real bold and italic faces and uses them to say what
+# kind of writing a passage is, so the asterisks would be both noise and a
+# second, contradictory emphasis system. Stripped rather than rendered — this is
+# a caption, not a document, and a bold word inside an italic reasoning block
+# would undo the one distinction the styling is making.
+MARKDOWN = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|__(.+?)__", re.DOTALL)
+
+
+def plain(text):
+    if not text:
+        return text
+    return MARKDOWN.sub(lambda m: next(g for g in m.groups() if g is not None), text)
 
 
 def wrap(text, font, width, draw):
@@ -229,7 +264,7 @@ class Panel:
         draw.text((self.pad, y), style["title"], font=self.small, fill=LABEL_FG)
         y += int(self.small.size * 1.9)
 
-        lines = wrap(text, font, self.width - 2 * self.pad, draw)
+        lines = wrap(plain(text), font, self.width - 2 * self.pad, draw)
         clipped = len(lines) > style["lines"]
         for line in lines[:style["lines"]]:
             draw.text((self.pad, y), line, font=font, fill=style["fill"])
