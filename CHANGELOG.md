@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 Notable changes to tapto-vnc. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); each entry is one line
@@ -9,9 +9,9 @@ about what changed for you, and the commit it links to carries the reasoning.
 tapto-vnc is a program, not a library, so the surface that has to stay stable is
 not a C++ API. It is:
 
-- **command-line flags** â€” a flag removed or given a different meaning
-- **config keys** â€” a key renamed, dropped, or resolved in a different order
-- **the tools the model sees** â€” their names, their parameters, and what a call
+- **command-line flags** — a flag removed or given a different meaning
+- **config keys** — a key renamed, dropped, or resolved in a different order
+- **the tools the model sees** — their names, their parameters, and what a call
   does
 
 That last one is easy to underrate. A model's behaviour is a function of the
@@ -33,9 +33,9 @@ carries everything else.
   picture is least detailed, so measure before trusting it. ([38ae1c2])
 - `--move-first on` (config key `move-first`, off by default) asks the model to
   `vnc_move` to a point and read what reacts before clicking it. Advice, not a
-  gate â€” nothing refuses a click that skipped it. ([65b225d])
+  gate — nothing refuses a click that skipped it. ([65b225d])
 - A dropped console reconnects by itself, once per failed tool call, and the
-  action that hit the dead connection is never replayed â€” a reconnect cannot
+  action that hit the dead connection is never replayed — a reconnect cannot
   turn one click into two. A WebMKS ticket is single-use and expires in
   minutes, so this is a fresh vCenter login rather than a retry.
   ([92f10b4], [a0711aa])
@@ -43,7 +43,7 @@ carries everything else.
   last error where there was one, and how long the connection had been idle
   when the drop was noticed. A healthy stream closed by the far end is now
   distinguishable from one that failed. ([a3fb534], [2af77c2], [5d7918a])
-- `tools/kill-tcp.ps1` aborts a live console connection on demand â€” the only
+- `tools/kill-tcp.ps1` aborts a live console connection on demand — the only
   mechanism Windows offers for someone else's socket (`SetTcpEntry` with
   `MIB_TCP_STATE_DELETE_TCB`; needs elevation, IPv4 only). It refuses to act
   when the filter matches more than one connection. ([4bf4274])
@@ -53,13 +53,8 @@ carries everything else.
 - `--screenshots <dir>` writes `frames.jsonl` beside the images: one object per
   frame with its sequence, file, `epoch_ms`, kind (`full` or `zoom`), phase,
   label, size and aim point. Assembling frames into a contact sheet or a movie
-  needs facts a filename cannot carry â€” not least that zooms and full screens
+  needs facts a filename cannot carry — not least that zooms and full screens
   are different sizes. ([ba61887])
-- `--wake` (config key `wake`, **on** by default) sends left Shift after
-  connecting, so a guest that has blanked its screen is awake before the first
-  screenshot rather than presenting the model with a black picture it cannot
-  interpret. It runs on reconnect too, which follows the longest idle in a run.
-  `--wake off` restores the old behaviour. ([401a58b])
 - Screenshot numbering continues where a directory left off, so a session
   stopped and restarted against the same directory extends one timeline instead
   of overwriting it from `0001` again. Each process appends a start record
@@ -73,8 +68,8 @@ carries everything else.
   ruler pitch; the previous per-call rectangle produced a spacing that changed
   with every call, which models misread. ([5b02ffd])
 - **Breaking:** `vnc_click_zoom` is gone and so is `--coord-span`. There is one
-  coordinate system â€” screen pixels â€” instead of two live at once. ([fce9dee])
-- A click saved with `--screenshots` now writes two frames â€” the screen it aimed
+  coordinate system — screen pixels — instead of two live at once. ([fce9dee])
+- A click saved with `--screenshots` now writes two frames — the screen it aimed
   at, carrying the red dot, and then the screen it produced. The dot used to go
   on the result, which is the one picture it cannot be measured against: the
   target may not still be on screen. Drags mark the point they grab. Neither
@@ -87,7 +82,7 @@ measurements taken against the old schema do not carry over.
 
 - A reset socket is readable, not idle. Both transports polled for `POLLIN`
   alone, and Windows signals a dead connection with `POLLHUP`/`POLLERR` and
-  never `POLLIN` â€” so a dropped console was indistinguishable from a quiet one
+  never `POLLIN` — so a dropped console was indistinguishable from a quiet one
   until a later send failed. Detection moved from seconds later, in the write
   path, to immediately, in the read path. ([ccc51fc])
 - A completed handshake counts as activity, so the idle time reported with a
@@ -99,13 +94,13 @@ measurements taken against the old schema do not carry over.
   buffer happened to hold when `FormatMessage` wrote nothing, and their
   trailing `.\r\n` no longer splits a log line in two. ([ccc51fc])
 - `--resolution` no longer ends the run when VMware Tools is unavailable. It
-  waits the full timeout instead of nine seconds â€” a guest that has just booted
-  is exactly the case where the size is wrong and worth setting â€” then reports
+  waits the full timeout instead of nine seconds — a guest that has just booted
+  is exactly the case where the size is wrong and worth setting — then reports
   what it found and connects at the guest's current size. The first refusal
   reads `guest.toolsStatus`, so `toolsNotInstalled` stops immediately rather
   than waiting for something that will never arrive. ([75842dd])
 
-## [0.2.0] â€” 2026-08-15
+## [0.2.0] — 2026-08-15
 
 ### Added
 
@@ -113,9 +108,9 @@ measurements taken against the old schema do not carry over.
   config keys, and a *dialect* named by `<name>-provider-type`. Two local
   servers speaking the same API can now be told apart, where one store
   previously held at most one configuration per vendor. ([a1c3e48])
-- Secrets may say where they live instead of holding the value â€”
+- Secrets may say where they live instead of holding the value —
   `env:ANTHROPIC_API_KEY`, `cmd:pass show anthropic`,
-  `wincred:tapto/work-claude` â€” for any `api-key`, for `vcenter-password`, and
+  `wincred:tapto/work-claude` — for any `api-key`, for `vcenter-password`, and
   for `--password`. A value with no scheme is still the secret itself.
   ([af7a6b4], [7e53812])
 - `--version`, and the version and originating commit on the first line of
@@ -148,7 +143,7 @@ provider's name when `provider` is absent.
   vision token budgets in [docs/visual-grounding.md](docs/visual-grounding.md)
   were measured. ([6e1e482])
 
-## [0.1.0] â€” 2026-08-11
+## [0.1.0] — 2026-08-11
 
 Initial release: a model drives a remote screen over RFB/VNC, either against a
 plain VNC server or a VMware WebMKS console, with keyboard, mouse and
@@ -188,4 +183,3 @@ screenshots as tools. ([3d11be9])
 [ba61887]: https://github.com/centlakestefan/tapto-vnc/commit/ba61887
 [75842dd]: https://github.com/centlakestefan/tapto-vnc/commit/75842dd
 [c8dfd86]: https://github.com/centlakestefan/tapto-vnc/commit/c8dfd86
-[401a58b]: https://github.com/centlakestefan/tapto-vnc/commit/401a58b
