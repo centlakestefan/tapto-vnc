@@ -79,6 +79,30 @@ std::string extractTag(const std::string& xml, const std::string& tag) {
     return xml.substr(from, end - from);
 }
 
+// Like extractTag, but tolerates attributes on the opening tag.
+//
+// RetrievePropertiesEx types the values it returns — `<val
+// xsi:type="VirtualMachineToolsStatus">toolsOk</val>` — so an exact "<val>"
+// match never finds them. The nested elements inside a structured value, such
+// as guest.screen's width and height, are plain and the exact version reads
+// those.
+std::string extractTagAny(const std::string& xml, const std::string& tag) {
+    const std::string open = "<" + tag;
+    for (size_t start = xml.find(open); start != std::string::npos;
+         start = xml.find(open, start + 1)) {
+        // Guard against matching a longer name: "<value" is not "<val".
+        const size_t after = start + open.size();
+        if (after >= xml.size() || (xml[after] != '>' && xml[after] != ' ')) continue;
+
+        const size_t gt = xml.find('>', after);
+        if (gt == std::string::npos) return {};
+        const size_t end = xml.find("</" + tag + ">", gt + 1);
+        if (end == std::string::npos) return {};
+        return xml.substr(gt + 1, end - gt - 1);
+    }
+    return {};
+}
+
 std::unique_ptr<httplib::SSLClient> makeClient(const VCenterCredentials& credentials) {
     auto client = std::make_unique<httplib::SSLClient>(credentials.host, kVCenterPort);
     client->set_connection_timeout(kTimeoutSeconds, 0);
@@ -353,6 +377,33 @@ ScreenSize readGuestScreen(VmSession& session) {
     return size;
 }
 
+// Reads guest.toolsStatus: toolsOk, toolsOld, toolsNotRunning,
+// toolsNotInstalled — or empty if the property could not be read.
+//
+// Asked only once a request has already been refused, to turn "the guest is not
+// answering" into which of two very different situations that is. Tools that is
+// installed and not running will be back in seconds and waiting is right; Tools
+// that was never installed will not, and waiting half a minute for it teaches
+// the operator nothing they could act on.
+std::string readGuestToolsStatus(VmSession& session) {
+    const std::string body =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" "
+        "xmlns:vim25=\"urn:vim25\">"
+        "<soapenv:Body><vim25:RetrievePropertiesEx>"
+        "<_this type=\"PropertyCollector\">propertyCollector</_this>"
+        "<specSet>"
+        "<propSet><type>VirtualMachine</type><pathSet>guest.toolsStatus</pathSet></propSet>"
+        "<objectSet><obj type=\"VirtualMachine\">" + xmlEscape(session.vmId) + "</obj></objectSet>"
+        "</specSet>"
+        "<options/>"
+        "</vim25:RetrievePropertiesEx></soapenv:Body></soapenv:Envelope>";
+
+    auto res = soapCall(session, body);
+    if (!res || res->status != 200) return {};
+    return extractTagAny(res->body, "val");
+}
+
 }  // namespace
 
 std::string ConsoleTicket::websocketUrl() const {
@@ -396,32 +447,57 @@ ScreenSize setScreenResolution(const VCenterCredentials& credentials,
 
     // ToolsUnavailableFault means the request reached vCenter and VMware Tools
     // was not there to take it — still starting after a boot, or restarting
-    // after an update. It is transient by definition and clears within seconds,
-    // which is why asking a second time usually works.
+    // after an upgrade. It is transient by definition, so it is waited out
+    // rather than reported: the same `timeoutSeconds` the guest gets to apply a
+    // mode, since a guest that has just booted is exactly the case where Tools
+    // is missing and the wait was previously far too short to cover it.
     //
     // Only this fault is retried. InvalidPowerState, an authentication failure
     // or an unknown VM will answer the same however many times they are asked,
-    // and turning those into a half-minute of silent retrying would hide them.
-    constexpr int kToolsAttempts      = 4;
-    constexpr int kToolsRetrySeconds  = 3;
-    for (int attempt = 1;; ++attempt) {
+    // and turning those into half a minute of silent retrying would hide them.
+    constexpr int kToolsRetrySeconds = 3;
+    bool delivered = false;
+    std::string toolsStatus;
+    for (int waited = 0;; waited += kToolsRetrySeconds) {
         auto res = soapCall(session, body);
-        if (res && res->status == 200) break;
+        if (res && res->status == 200) { delivered = true; break; }
 
         const std::string fault = describeFault(res);
         // Substring rather than equality: the detail element is spelled
         // ToolsUnavailable or ToolsUnavailableFault depending on the vCenter.
-        const bool toolsNotReady = fault.find("ToolsUnavailable") != std::string::npos;
-        if (!toolsNotReady || attempt >= kToolsAttempts) {
-            fail("SetScreenResolution",
-                 attempt > 1 ? fault + ", still after " + std::to_string(attempt) + " attempts"
-                             : fault);
+        if (fault.find("ToolsUnavailable") == std::string::npos) {
+            fail("SetScreenResolution", fault);
         }
 
+        // Once, on the first refusal: the answer does not change while Tools is
+        // down, and it decides whether waiting is worth anything.
+        if (toolsStatus.empty()) {
+            toolsStatus = readGuestToolsStatus(session);
+            if (toolsStatus == "toolsNotInstalled") {
+                logStep(credentials.verbose,
+                        "guest.toolsStatus is toolsNotInstalled; not waiting for it");
+                break;
+            }
+        }
+
+        if (waited >= timeoutSeconds) break;
         logStep(credentials.verbose,
-                "VMware Tools not ready yet (" + fault + "); retrying in " +
+                "VMware Tools not ready yet (" + fault + ", guest.toolsStatus " +
+                    (toolsStatus.empty() ? "unreadable" : toolsStatus) + "); retrying in " +
                     std::to_string(kToolsRetrySeconds) + "s");
         std::this_thread::sleep_for(std::chrono::seconds(kToolsRetrySeconds));
+    }
+
+    if (!delivered) {
+        ScreenSize unset;
+        unset.note = toolsStatus == "toolsNotInstalled"
+                         ? "VMware Tools is not installed in the guest, so its screen size "
+                           "cannot be set from outside"
+                         : "VMware Tools did not answer within " +
+                               std::to_string(timeoutSeconds) + "s" +
+                               (toolsStatus.empty() ? "" : " (guest.toolsStatus " + toolsStatus + ")");
+        logStep(credentials.verbose, unset.note);
+        return unset;
     }
 
     // The call returns as soon as the request reaches VMware Tools; the guest
@@ -443,6 +519,10 @@ ScreenSize setScreenResolution(const VCenterCredentials& credentials,
     logStep(credentials.verbose,
             "guest has not reported " + requested + " within " +
                 std::to_string(timeoutSeconds) + "s");
+    if (!seen.valid()) {
+        seen.note = "the guest reported no screen size within " +
+                    std::to_string(timeoutSeconds) + "s, though VMware Tools took the request";
+    }
     return seen;
 }
 

@@ -792,12 +792,23 @@ int main(int argc, char** argv) {
             // Before the ticket, not after: the framebuffer is sized when the
             // RFB session opens, so a resize has to have landed by then.
             if (resolutionWidth > 0) {
+                // Two waits, not one: up to 30s for VMware Tools to be there to
+                // take the request, then up to 30s for the guest to apply it.
+                // The second cannot be folded into the first — the console
+                // framebuffer is sized when the RFB session opens, so a resize
+                // still in flight would land mid-stream.
                 std::cout << "Setting guest resolution to " << resolutionWidth << "x"
-                          << resolutionHeight << " (up to 30s)... " << std::flush;
+                          << resolutionHeight << " (up to 60s)... " << std::flush;
                 const tapto::ScreenSize actual = tapto::setScreenResolution(
                     vcenter, vmName, resolutionWidth, resolutionHeight);
                 if (!actual.valid()) {
-                    std::cout << "no answer from the guest; VMware Tools may not be running\n";
+                    // Not fatal. The console works at whatever size the guest is
+                    // already using, and ending the run here would trade a
+                    // slightly wrong screen for no screen at all.
+                    std::cout << (actual.note.empty()
+                                      ? "no answer from the guest; VMware Tools may not be running"
+                                      : actual.note)
+                              << "; continuing at the guest's current size\n";
                 } else if (actual.width != resolutionWidth || actual.height != resolutionHeight) {
                     std::cout << "guest settled on " << actual.width << "x" << actual.height << "\n";
                 } else {

@@ -40,6 +40,14 @@ ConsoleTicket acquireConsoleTicket(const VCenterCredentials& credentials,
 struct ScreenSize {
     int width  = 0;
     int height = 0;
+
+    // Why there is no size, when there is none: "VMware Tools is not installed
+    // in the guest", "VMware Tools did not answer within 30s". Empty when the
+    // guest answered. The caller carries on either way, so this is what it has
+    // to tell whoever is watching — a fault name alone reads as a defect in the
+    // tool rather than a condition in the guest.
+    std::string note;
+
     bool valid() const { return width > 0 && height > 0; }
 };
 
@@ -61,10 +69,17 @@ struct ScreenSize {
 // requested size within `timeoutSeconds` this returns the last size seen
 // rather than throwing, so the caller can decide whether to carry on — a guest
 // that refuses a mode is not a reason to abandon the session. An invalid
-// ScreenSize means the guest reported nothing at all, which usually means
-// VMware Tools is not running.
+// ScreenSize means the guest reported nothing at all, and `note` says why.
 //
-// Throws std::runtime_error only if the request itself was rejected.
+// VMware Tools being unavailable is that same condition arriving earlier: the
+// request cannot even be delivered. It is retried for `timeoutSeconds`, since
+// Tools comes back on its own after a boot or an upgrade, and then reported the
+// same way rather than thrown. Nothing about a resolution that could not be set
+// justifies abandoning a console that works.
+//
+// Throws std::runtime_error only when the request was genuinely rejected —
+// the VM powered off, the credentials refused, the VM unknown. Those answer
+// identically however many times they are asked.
 ScreenSize setScreenResolution(const VCenterCredentials& credentials,
                                const std::string& vmName,
                                int width, int height,
