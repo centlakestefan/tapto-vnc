@@ -25,3 +25,7 @@
 !/docs/
 !/third_party/
 !/tools/
+
+# tools/make-movie.py is a script, never an import, so a __pycache__ here means
+# something loaded it as a module — which is what a test harness does.
+/tools/__pycache__/

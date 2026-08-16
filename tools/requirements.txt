@@ -1,0 +1,11 @@
+# For tools/make-movie.py, which assembles a --screenshots directory into an
+# mp4. Nothing else in this repository needs Python: the program itself is C++
+# and builds with CMake alone.
+#
+# PyAV is FFmpeg's own libraries with a Python binding, and its wheels carry
+# those libraries with them — so this line is the whole install, with no system
+# ffmpeg, no PATH to arrange, and the same encoder behaving the same way on
+# every machine.
+#
+#     pip install -r tools/requirements.txt
+av>=13.0

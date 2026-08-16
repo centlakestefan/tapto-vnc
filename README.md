@@ -247,6 +247,26 @@ The store is shared with `tapto-code`, which can write it for you:
 | `--quiet` | hide the model's intermediate reasoning |
 | `--version` | version and the commit it was built from |
 
+### Watching a run back
+
+`--screenshots <dir>` leaves the frames and a `frames.jsonl` describing them.
+`tools/make-movie.py` turns that into an mp4:
+
+```sh
+pip install -r tools/requirements.txt
+python tools/make-movie.py shots
+```
+
+A four-hour session came out as 5½ minutes and 15 MB, because each frame is
+held for the time until the next one actually arrived — clamped at both ends,
+since without a ceiling the movie plays the operator's lunch break in real time
+and without a floor the click pairs flash past unseen. `--crf 28 --width 960`
+takes the same run to 6 MB when it has to be sent somewhere.
+
+The only dependency is PyAV, which carries FFmpeg inside its wheel, so there is
+no system ffmpeg to install. If you have one anyway, `frames.concat` is written
+alongside and is the same cut list.
+
 ### Versions
 
 [CHANGELOG.md](CHANGELOG.md) records what changed and what counts as a breaking
