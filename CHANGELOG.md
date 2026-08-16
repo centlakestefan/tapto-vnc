@@ -51,10 +51,15 @@ carries everything else.
   and `hold`, which produce three distinct traces. Recovery is otherwise only
   testable by waiting for a real drop. ([a633cd5])
 - `--screenshots <dir>` writes `frames.jsonl` beside the images: one object per
-  frame with its sequence, file, milliseconds since the first frame, kind
-  (`full` or `zoom`), phase, label, size and aim point. Assembling frames into
-  a contact sheet or a movie needs facts a filename cannot carry — not least
-  that zooms and full screens are different sizes. ([ba61887])
+  frame with its sequence, file, `epoch_ms`, kind (`full` or `zoom`), phase,
+  label, size and aim point. Assembling frames into a contact sheet or a movie
+  needs facts a filename cannot carry — not least that zooms and full screens
+  are different sizes. ([ba61887])
+- Screenshot numbering continues where a directory left off, so a session
+  stopped and restarted against the same directory extends one timeline instead
+  of overwriting it from `0001` again. Each process appends a start record
+  naming what it continues from and which build it is, and frame times are
+  absolute, so the gap at a restart is a real measured gap. ([c8dfd86])
 
 ### Changed
 
@@ -177,3 +182,4 @@ screenshots as tools. ([3d11be9])
 [5d7918a]: https://github.com/centlakestefan/tapto-vnc/commit/5d7918a
 [ba61887]: https://github.com/centlakestefan/tapto-vnc/commit/ba61887
 [75842dd]: https://github.com/centlakestefan/tapto-vnc/commit/75842dd
+[c8dfd86]: https://github.com/centlakestefan/tapto-vnc/commit/c8dfd86
