@@ -9,3 +9,8 @@
 #
 #     pip install -r tools/requirements.txt
 av>=13.0
+
+# Pillow draws the panel beside the screen — the task and the model's own
+# reasoning, which frames.jsonl records but a frame cannot show. It also loads
+# and composes the frames, which is why there is no FFmpeg filter graph here.
+pillow>=10.0

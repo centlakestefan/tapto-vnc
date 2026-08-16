@@ -3,70 +3,138 @@
 # Copyright 2026 Centlake Software AB
 """Turn a --screenshots directory into a movie of the run.
 
-The frames tapto-vnc writes are lossless PNGs of a desktop, 44MB for a
-four-hour session, and they arrive at wildly uneven times: half a second
-between a click and its result, a quarter of an hour while the model thinks,
-and occasionally two hours because somebody went to lunch with the prompt open.
-Three things follow from that, and they are what this script is.
+The frames tapto-vnc writes are lossless PNGs of a desktop, and they arrive at
+wildly uneven times: half a second between a click and its result, a quarter of
+an hour while the model thinks, and occasionally two hours because somebody
+went to lunch with the prompt open. Three things follow, and they are what this
+script is.
 
 Encoding. H.264 in mp4, because a desktop that sits still between actions costs
-a video codec almost nothing -- the same 44MB comes out around 3MB -- and
-because the result plays everywhere without anything installed. It is 4:2:0, so
-coloured subpixel fringes on small text soften; this is a movie for watching a
-run back, not for reading a file listing out of. Use the frames themselves for
-that, they are still there.
+a video codec almost nothing and the result plays everywhere with nothing
+installed. It is 4:2:0, so coloured subpixel fringes on small text soften; this
+is a movie for watching a run back, not for reading a file listing out of. The
+frames themselves are still there for that.
 
 Pacing. Each frame is held for the time until the next one actually arrived,
 clamped at both ends. Without a ceiling the lunch break plays in real time;
 without a floor the click pairs flash past unseen. The clamps are the whole
-editorial policy and they are flags, because the right values are a matter of
-taste and change with what you are looking for.
+editorial policy, and they are flags because the right values are a matter of
+taste.
 
-Fitting. A zoom is 1014x319 and the screen is whatever the guest is, so zooms
-are scaled to fit and centred on black rather than stretched. They are worth
-keeping: a zoom is the model looking closely at the thing it is about to click,
-and dropping it removes the reason for the click that follows.
+Words. Frames alone are a machine being operated by nobody. frames.jsonl also
+carries what the run was asked to do and what the model was thinking, so those
+go in a panel beside the screen — beside rather than under, because reasoning
+is paragraphs and a strip under a 1280-wide screen holds about four lines. The
+panel is drawn here and never into the saved PNGs: those are the record of what
+the guest actually displayed, and captions burnt into them would make them
+useless as evidence and freeze one layout choice forever.
 
-Needs PyAV (see tools/requirements.txt):
+Needs PyAV and Pillow (see tools/requirements.txt):
     pip install -r tools/requirements.txt
 """
 
 import argparse
 import json
 import sys
+import time
 from fractions import Fraction
 from pathlib import Path
 
 try:
     import av
-except ImportError:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError as problem:
     sys.exit(
-        "This needs PyAV.\n"
+        f"This needs PyAV and Pillow ({problem}).\n"
         "    pip install -r tools/requirements.txt\n"
         "PyAV carries its own FFmpeg, so nothing else has to be installed."
     )
 
 # Milliseconds, so a frame's timestamp is the number in frames.jsonl with the
-# run's start subtracted -- nothing to convert when reading a movie against its
+# run's start subtracted — nothing to convert when reading a movie against its
 # index.
 TIME_BASE = Fraction(1, 1000)
 
+# The panel. Dark, because it sits next to a bright desktop for minutes at a
+# time and a white column beside it is punishing to watch.
+PANEL_BG = (18, 18, 20)
+PANEL_RULE = (58, 58, 64)
+LABEL_FG = (128, 128, 138)      # the small capitals naming each section
+PROMPT_FG = (235, 235, 240)     # what it was asked: the brightest thing here
+THINK_FG = (176, 182, 196)      # what it was thinking, a step quieter
+ACTION_FG = (240, 190, 120)     # what it just did, in the accent colour
+AIM_FG = (235, 120, 120)        # the same red as the dot in the frame
+
+FONT_CANDIDATES = [
+    # Windows, Linux, macOS. First one that exists wins; the bitmap default is
+    # the last resort and looks it.
+    ("C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/segoeuib.ttf"),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ("/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"),
+    ("/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Helvetica.ttc"),
+]
+
+
+def load_fonts(size):
+    for regular, bold in FONT_CANDIDATES:
+        if Path(regular).exists():
+            try:
+                return (ImageFont.truetype(regular, size),
+                        ImageFont.truetype(bold if Path(bold).exists() else regular, size),
+                        ImageFont.truetype(regular, max(11, int(size * 0.72))))
+            except OSError:
+                continue
+    default = ImageFont.load_default()
+    return default, default, default
+
 
 def read_index(path):
-    """The frames and the session markers, in the order they were written."""
-    frames, sessions = [], []
+    """The frames, and the words that were spoken around them."""
+    frames, sessions, words = [], [], []
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:
                 continue
-            record = json.loads(line)
-            if record.get("event") == "start":
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue          # a half-written last line from a killed run
+            event = record.get("event")
+            if event == "start":
                 sessions.append(record)
+            elif event in ("prompt", "reply", "say", "think"):
+                words.append(record)
             elif "seq" in record:
                 frames.append(record)
     frames.sort(key=lambda f: f["seq"])
-    return frames, sessions
+    words.sort(key=lambda w: w["epoch_ms"])
+    return frames, sessions, words
+
+
+def attach_words(frames, words):
+    """For each frame, the prompt it is working under and the last thing said.
+
+    Both are 'the most recent one at or before this frame', which is what a
+    viewer would infer anyway: the task stays up for the whole turn, and the
+    commentary is whatever the model last said on the way to this picture.
+    """
+    attached = []
+    prompt = None
+    commentary = None
+    position = 0
+    for frame in frames:
+        while position < len(words) and words[position]["epoch_ms"] <= frame["epoch_ms"]:
+            word = words[position]
+            if word["event"] == "prompt":
+                prompt = word["text"]
+                commentary = None      # a new task; the old thinking is stale
+            else:
+                commentary = word["text"]
+            position += 1
+        attached.append((prompt, commentary))
+    return attached
 
 
 def plan_durations(frames, args):
@@ -81,7 +149,7 @@ def plan_durations(frames, args):
 
         # The one frame that is not a record of elapsed time. An aim frame
         # exists to be looked at, and the real gap to the click it precedes is
-        # a few hundred milliseconds -- not long enough to find a red dot on a
+        # a few hundred milliseconds — not long enough to find a red dot on a
         # screen you have never seen before.
         if frame.get("phase") == "before":
             held = max(held, args.aim_ms)
@@ -89,54 +157,102 @@ def plan_durations(frames, args):
     return holds
 
 
-def decode_png(path):
-    with av.open(str(path)) as container:
-        for frame in container.decode(video=0):
-            return frame
-    raise ValueError(f"no image in {path}")
+def wrap(text, font, width, draw):
+    """Greedy wrap, measured in the font rather than counted in characters."""
+    lines = []
+    for paragraph in text.splitlines():
+        if not paragraph.strip():
+            lines.append("")
+            continue
+        line = ""
+        for word in paragraph.split():
+            candidate = f"{line} {word}".strip()
+            if draw.textlength(candidate, font=font) <= width or not line:
+                line = candidate
+            else:
+                lines.append(line)
+                line = word
+        lines.append(line)
+    return lines
 
 
-class Fitter:
-    """Scales and letterboxes a frame of any size onto the movie's canvas.
+class Panel:
+    """Draws the left-hand column: the task, the thinking, and the action."""
 
-    One filter graph per input size, built on demand: a graph's source is
-    configured for the size it was made with, and a run has two sizes in it —
-    the screen and the zoom — so this is a cache of two.
-    """
-
-    def __init__(self, width, height):
+    def __init__(self, width, height, fonts, started_ms):
         self.width, self.height = width, height
-        self.graphs = {}
+        self.body, self.bold, self.small = fonts
+        self.started_ms = started_ms
+        self.pad = max(14, width // 24)
 
-    def _graph(self, frame):
-        key = (frame.width, frame.height, frame.format.name)
-        if key not in self.graphs:
-            graph = av.filter.Graph()
-            source = graph.add_buffer(
-                width=frame.width,
-                height=frame.height,
-                format=frame.format.name,
-                time_base=TIME_BASE,
-            )
-            scale = graph.add(
-                "scale",
-                f"{self.width}:{self.height}:force_original_aspect_ratio=decrease",
-            )
-            pad = graph.add(
-                "pad", f"{self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black"
-            )
-            sink = graph.add("buffersink")
-            source.link_to(scale)
-            scale.link_to(pad)
-            pad.link_to(sink)
-            graph.configure()
-            self.graphs[key] = graph
-        return self.graphs[key]
+    def _section(self, draw, y, title, text, colour, font, max_lines):
+        if not text:
+            return y
+        draw.text((self.pad, y), title, font=self.small, fill=LABEL_FG)
+        y += int(self.small.size * 1.9)
 
-    def fit(self, frame):
-        graph = self._graph(frame)
-        graph.push(frame)
-        return graph.pull()
+        lines = wrap(text, font, self.width - 2 * self.pad, draw)
+        clipped = len(lines) > max_lines
+        for line in lines[:max_lines]:
+            draw.text((self.pad, y), line, font=font, fill=colour)
+            y += int(font.size * 1.42)
+        if clipped:
+            draw.text((self.pad, y), "…", font=font, fill=LABEL_FG)
+            y += int(font.size * 1.42)
+        return y + int(font.size * 0.9)
+
+    def render(self, frame, prompt, commentary):
+        image = Image.new("RGB", (self.width, self.height), PANEL_BG)
+        draw = ImageDraw.Draw(image)
+        draw.line([(self.width - 1, 0), (self.width - 1, self.height)], fill=PANEL_RULE)
+
+        elapsed = (frame["epoch_ms"] - self.started_ms) / 1000
+        clock = f"{int(elapsed // 3600)}:{int(elapsed // 60) % 60:02d}:{int(elapsed) % 60:02d}"
+        draw.text((self.pad, self.pad), f"#{frame['seq']}", font=self.small, fill=LABEL_FG)
+        draw.text((self.width - self.pad - draw.textlength(clock, font=self.small), self.pad),
+                  clock, font=self.small, fill=LABEL_FG)
+
+        y = self.pad + int(self.small.size * 3.0)
+        y = self._section(draw, y, "TASK", prompt, PROMPT_FG, self.bold, 8)
+        y = self._section(draw, y, "THINKING", commentary, THINK_FG, self.body, 22)
+
+        # The action goes at the foot rather than in sequence: it is a caption
+        # for the picture beside it, and it is the one line that changes on
+        # every single frame.
+        label = frame.get("label", "")
+        colour = AIM_FG if frame.get("phase") == "before" else ACTION_FG
+        lines = wrap(label, self.body, self.width - 2 * self.pad, draw)[:3]
+        y = self.height - self.pad - int(self.body.size * 1.42) * len(lines)
+        draw.line([(self.pad, y - self.pad), (self.width - self.pad, y - self.pad)],
+                  fill=PANEL_RULE)
+        for line in lines:
+            draw.text((self.pad, y), line, font=self.body, fill=colour)
+            y += int(self.body.size * 1.42)
+        return image
+
+
+def compose(shot, panel_image, screen_size, panel_side):
+    """Screen and panel on one canvas, the screen letterboxed into its half.
+
+    A zoom is a different shape from the screen, so it is scaled to fit and
+    centred rather than stretched: it is the model looking closely at what it is
+    about to click, and a distorted one would misrepresent where it looked.
+    """
+    screen_w, screen_h = screen_size
+    panel_w = panel_image.width if panel_image else 0
+    canvas = Image.new("RGB", (panel_w + screen_w, screen_h), (0, 0, 0))
+
+    if shot.size != screen_size:
+        scale = min(screen_w / shot.width, screen_h / shot.height)
+        shot = shot.resize((max(1, int(shot.width * scale)), max(1, int(shot.height * scale))),
+                           Image.LANCZOS)
+
+    screen_x = panel_w if panel_side == "left" else 0
+    canvas.paste(shot, (screen_x + (screen_w - shot.width) // 2,
+                        (screen_h - shot.height) // 2))
+    if panel_image:
+        canvas.paste(panel_image, (0 if panel_side == "left" else screen_w, 0))
+    return canvas
 
 
 def main():
@@ -153,7 +269,13 @@ def main():
     parser.add_argument("--preset", default="slow",
                         help="x264 speed/size tradeoff: ultrafast..veryslow")
     parser.add_argument("--width", type=int, default=0,
-                        help="scale the movie to this width, 0 for the guest's own size")
+                        help="scale the whole canvas to this width, 0 for native")
+    parser.add_argument("--panel", choices=("left", "right", "off"), default="left",
+                        help="where the task and the model's thinking are drawn")
+    parser.add_argument("--panel-width", type=int, default=0,
+                        help="panel width in pixels, 0 to size it from the screen")
+    parser.add_argument("--font-size", type=int, default=0,
+                        help="panel body text size, 0 to size it from the panel")
     parser.add_argument("--min-ms", type=int, default=400,
                         help="shortest a frame may be held")
     parser.add_argument("--max-ms", type=int, default=2500,
@@ -162,7 +284,7 @@ def main():
                         help="minimum hold on an 'about to click' frame")
     parser.add_argument("--hold-ms", type=int, default=3000,
                         help="how long the final frame stays up")
-    parser.add_argument("--zooms", choices=("pad", "skip"), default="pad",
+    parser.add_argument("--zooms", choices=("fit", "skip"), default="fit",
                         help="what to do with zoom frames, which are not screen-sized")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
@@ -173,7 +295,7 @@ def main():
         sys.exit(f"no frames.jsonl in {directory}\n"
                  "Run tapto-vnc with --screenshots <dir> first.")
 
-    frames, sessions = read_index(index)
+    frames, sessions, words = read_index(index)
     if not frames:
         sys.exit("frames.jsonl lists no frames")
 
@@ -181,31 +303,42 @@ def main():
     # part way through should still be a movie of whatever it spent its time at.
     sizes = {}
     for frame in frames:
-        sizes[(frame["width"], frame["height"])] = sizes.get((frame["width"], frame["height"]), 0) + 1
+        key = (frame["width"], frame["height"])
+        sizes[key] = sizes.get(key, 0) + 1
     screen_w, screen_h = max(sizes, key=sizes.get)
 
+    panel_w = 0
+    if args.panel != "off":
+        panel_w = args.panel_width or max(320, int(screen_w * 0.32))
+    font_size = args.font_size or max(15, int(panel_w / 24)) if panel_w else 15
+    fonts = load_fonts(font_size)
+
+    canvas_w, canvas_h = screen_w + panel_w, screen_h
     if args.width:
-        out_w = args.width
-        out_h = round(screen_h * args.width / screen_w)
+        scale = args.width / canvas_w
+        out_w, out_h = args.width, round(canvas_h * scale)
     else:
-        out_w, out_h = screen_w, screen_h
+        out_w, out_h = canvas_w, canvas_h
     # 4:2:0 stores chroma at half resolution in each axis, so both have to be
     # even or the encoder has nowhere to put the last row.
     out_w -= out_w % 2
     out_h -= out_h % 2
 
     holds = plan_durations(frames, args)
+    attached = attach_words(frames, words)
 
     chosen = []
-    for frame, held in zip(frames, holds):
+    for frame, held, (prompt, commentary) in zip(frames, holds, attached):
         path = directory / frame["file"]
         if not path.exists():
             continue
         if args.zooms == "skip" and (frame["width"], frame["height"]) != (screen_w, screen_h):
             continue
-        chosen.append((frame, path, held))
+        chosen.append((frame, path, held, prompt, commentary))
     if not chosen:
         sys.exit("no usable frames")
+
+    panel = Panel(panel_w, screen_h, fonts, frames[0]["epoch_ms"]) if panel_w else None
 
     out_path = directory / args.out
     container = av.open(str(out_path), mode="w", options={"movflags": "+faststart"})
@@ -216,21 +349,41 @@ def main():
     # tune=stillimage is x264's setting for exactly this material: long stretches
     # of an unchanging desktop, where the default psychovisual tuning spends bits
     # on grain that is not there.
-    stream.options = {"crf": str(args.crf), "preset": args.preset, "tune": "stillimage"}
+    #
+    # bf=0 disables B-frames, and that one is not about size. A codec that
+    # reorders frames reports a delay, and the muxer compensates by writing an
+    # edit list that skips it. Measured in frames that delay is invisible; here
+    # a frame is often 2.5 seconds, so a two-frame delay became a five-second
+    # edit at the head of the file and players opened the movie on black. No
+    # reordering, no delay, no edit list.
+    stream.options = {
+        "crf": str(args.crf),
+        "preset": args.preset,
+        "tune": "stillimage",
+        "bf": "0",
+    }
 
-    fitter = Fitter(out_w, out_h)
     pts = 0
-    padded = 0
     written = 0
+    fitted = 0
+    started = time.monotonic()
+    canvas = None
     try:
-        for frame, path, held in chosen:
-            image = decode_png(path)
-            if (image.width, image.height) != (out_w, out_h):
-                padded += 1
-            fitted = fitter.fit(image)
-            fitted.pts = pts
-            fitted.time_base = TIME_BASE
-            for packet in stream.encode(fitted):
+        for frame, path, held, prompt, commentary in chosen:
+            with Image.open(path) as opened:
+                shot = opened.convert("RGB")
+            if shot.size != (screen_w, screen_h):
+                fitted += 1
+
+            panel_image = panel.render(frame, prompt, commentary) if panel else None
+            canvas = compose(shot, panel_image, (screen_w, screen_h), args.panel)
+            if (canvas.width, canvas.height) != (out_w, out_h):
+                canvas = canvas.resize((out_w, out_h), Image.LANCZOS)
+
+            video_frame = av.VideoFrame.from_image(canvas)
+            video_frame.pts = pts
+            video_frame.time_base = TIME_BASE
+            for packet in stream.encode(video_frame):
                 container.mux(packet)
             pts += held
             written += 1
@@ -241,9 +394,11 @@ def main():
         # last one has none: without this the movie cuts the moment the final
         # picture appears. Repeating it gives the ending something to sit on,
         # and an identical frame costs the encoder almost nothing.
-        if written:
-            fitted.pts = pts
-            for packet in stream.encode(fitted):
+        if canvas is not None:
+            video_frame = av.VideoFrame.from_image(canvas)
+            video_frame.pts = pts
+            video_frame.time_base = TIME_BASE
+            for packet in stream.encode(video_frame):
                 container.mux(packet)
             pts += args.hold_ms
 
@@ -252,24 +407,20 @@ def main():
     finally:
         container.close()
 
-    # The same cut list for anyone with a system ffmpeg:
-    #   ffmpeg -f concat -safe 0 -i frames.concat -vsync vfr -pix_fmt yuv420p out.mp4
-    # The last entry is repeated because the concat demuxer ignores the final
-    # duration, for the same reason the encoder above needed a repeat.
-    concat = directory / "frames.concat"
-    with concat.open("w", encoding="utf-8") as handle:
-        for frame, _, held in chosen:
-            handle.write(f"file '{frame['file']}'\nduration {held / 1000:.3f}\n")
-        handle.write(f"file '{chosen[-1][0]['file']}'\n")
-
     if not args.quiet:
         real_ms = frames[-1]["epoch_ms"] - frames[0]["epoch_ms"]
         print()
         print(f"wrote {out_path}")
-        print(f"  frames    {written} of {len(frames)} ({padded} fitted from another size)")
+        print(f"  frames    {written} of {len(frames)} ({fitted} fitted from another size)")
         print(f"  plays in  {pts / 60000:.1f} min, from {real_ms / 60000:.1f} min of real time")
-        print(f"  size      {out_path.stat().st_size / 1e6:.1f} MB"
-              f" at {out_w}x{out_h}, crf {args.crf}")
+        print(f"  size      {out_path.stat().st_size / 1e6:.1f} MB at {out_w}x{out_h},"
+              f" crf {args.crf}, encoded in {time.monotonic() - started:.0f}s")
+        if panel:
+            spoken = sum(1 for w in words if w["event"] in ("think", "say", "reply"))
+            print(f"  panel     {len(set(w['text'] for w in words if w['event'] == 'prompt'))}"
+                  f" prompt(s), {spoken} passage(s) of the model talking")
+            if not words:
+                print("            (nothing — this run predates the index carrying text)")
         if len(sessions) > 1:
             print(f"  note      {len(sessions)} sessions in this directory;"
                   " the gaps between them are clamped like any other")

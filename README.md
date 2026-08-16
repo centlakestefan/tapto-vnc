@@ -257,15 +257,20 @@ pip install -r tools/requirements.txt
 python tools/make-movie.py shots
 ```
 
-A four-hour session came out as 5½ minutes and 15 MB, because each frame is
-held for the time until the next one actually arrived — clamped at both ends,
-since without a ceiling the movie plays the operator's lunch break in real time
-and without a floor the click pairs flash past unseen. `--crf 28 --width 960`
-takes the same run to 6 MB when it has to be sent somewhere.
+A four-hour session came out as 5½ minutes and 3 MB, because each frame is held
+for the time until the next one actually arrived — clamped at both ends, since
+without a ceiling the movie plays the operator's lunch break in real time and
+without a floor the click pairs flash past unseen.
 
-The only dependency is PyAV, which carries FFmpeg inside its wheel, so there is
-no system ffmpeg to install. If you have one anyway, `frames.concat` is written
-alongside and is the same cut list.
+Beside the screen is a panel carrying what the run was asked to do and what the
+model was thinking while it did it, both read from the index rather than burnt
+into the frames. `--panel right` moves it, `--panel off` removes it. The other
+knobs worth knowing are `--max-ms` (the ceiling that makes idle watchable),
+`--crf` and `--width`.
+
+The dependencies are PyAV, which carries FFmpeg inside its wheel so there is no
+system ffmpeg to install, and Pillow, which draws the panel and composes the
+frames.
 
 ### Versions
 
