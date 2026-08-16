@@ -60,33 +60,62 @@ TIME_BASE = Fraction(1, 1000)
 PANEL_BG = (18, 18, 20)
 PANEL_RULE = (58, 58, 64)
 LABEL_FG = (128, 128, 138)      # the small capitals naming each section
-PROMPT_FG = (235, 235, 240)     # what it was asked: the brightest thing here
-THINK_FG = (176, 182, 196)      # what it was thinking, a step quieter
 ACTION_FG = (240, 190, 120)     # what it just did, in the accent colour
 AIM_FG = (235, 120, 120)        # the same red as the dot in the frame
 
+# The four kinds of writing the index records, and how each is shown.
+#
+# They are different acts and the panel should not flatten them. A prompt is an
+# instruction from a person and stands for the whole turn, so it is the
+# brightest thing here and set in bold. A reply is the model's answer, and gets
+# the accent colour because it is the one thing that concludes something.
+# Reasoning is the model talking to itself: dimmest, and italic where a face is
+# available, because it is not addressed to anyone. Prose said in passing sits
+# between the two.
+STYLES = {
+    "prompt": {"title": "TASK",     "fill": (235, 235, 240), "face": "bold",    "lines": 8},
+    "reply":  {"title": "REPLY",    "fill": (150, 210, 160), "face": "regular", "lines": 20},
+    "say":    {"title": "SAYS",     "fill": (214, 218, 228), "face": "regular", "lines": 20},
+    "think":  {"title": "THINKING", "fill": (150, 156, 172), "face": "italic",  "lines": 22},
+}
+
 FONT_CANDIDATES = [
-    # Windows, Linux, macOS. First one that exists wins; the bitmap default is
-    # the last resort and looks it.
-    ("C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/segoeuib.ttf"),
+    # Windows, Linux, macOS. First set whose regular face exists wins; the
+    # bitmap default is the last resort and looks it.
+    ("C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/segoeuib.ttf",
+     "C:/Windows/Fonts/segoeuii.ttf"),
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-    ("/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"),
-    ("/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Helvetica.ttc"),
+     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"),
+    ("/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+     "/usr/share/fonts/TTF/DejaVuSans-Oblique.ttf"),
+    ("/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Helvetica.ttc",
+     "/System/Library/Fonts/Helvetica.ttc"),
 ]
 
 
 def load_fonts(size):
-    for regular, bold in FONT_CANDIDATES:
+    """regular, bold, italic and a smaller face for the section labels.
+
+    A missing bold or italic falls back to the regular face rather than to
+    another family: the styles here carry meaning, but a panel set in two
+    unrelated typefaces is worse than one that repeats itself.
+    """
+    for regular, bold, italic in FONT_CANDIDATES:
         if Path(regular).exists():
             try:
-                return (ImageFont.truetype(regular, size),
-                        ImageFont.truetype(bold if Path(bold).exists() else regular, size),
-                        ImageFont.truetype(regular, max(11, int(size * 0.72))))
+                def face(path):
+                    return ImageFont.truetype(path if Path(path).exists() else regular, size)
+                return {
+                    "regular": ImageFont.truetype(regular, size),
+                    "bold": face(bold),
+                    "italic": face(italic),
+                    "label": ImageFont.truetype(regular, max(11, int(size * 0.72))),
+                }
             except OSError:
                 continue
     default = ImageFont.load_default()
-    return default, default, default
+    return {"regular": default, "bold": default, "italic": default, "label": default}
 
 
 def read_index(path):
@@ -119,10 +148,13 @@ def attach_words(frames, words):
     Both are 'the most recent one at or before this frame', which is what a
     viewer would infer anyway: the task stays up for the whole turn, and the
     commentary is whatever the model last said on the way to this picture.
+
+    The commentary keeps its kind, because reasoning, prose and a final reply
+    are different acts and the panel shows them differently.
     """
     attached = []
     prompt = None
-    commentary = None
+    commentary = None                  # (kind, text)
     position = 0
     for frame in frames:
         while position < len(words) and words[position]["epoch_ms"] <= frame["epoch_ms"]:
@@ -131,7 +163,7 @@ def attach_words(frames, words):
                 prompt = word["text"]
                 commentary = None      # a new task; the old thinking is stale
             else:
-                commentary = word["text"]
+                commentary = (word["event"], word["text"])
             position += 1
         attached.append((prompt, commentary))
     return attached
@@ -181,20 +213,26 @@ class Panel:
 
     def __init__(self, width, height, fonts, started_ms):
         self.width, self.height = width, height
-        self.body, self.bold, self.small = fonts
+        self.fonts = fonts
+        self.body = fonts["regular"]
+        self.small = fonts["label"]
         self.started_ms = started_ms
         self.pad = max(14, width // 24)
 
-    def _section(self, draw, y, title, text, colour, font, max_lines):
+    def _section(self, draw, y, kind, text):
+        """One block of writing, styled by what kind of writing it is."""
         if not text:
             return y
-        draw.text((self.pad, y), title, font=self.small, fill=LABEL_FG)
+        style = STYLES[kind]
+        font = self.fonts[style["face"]]
+
+        draw.text((self.pad, y), style["title"], font=self.small, fill=LABEL_FG)
         y += int(self.small.size * 1.9)
 
         lines = wrap(text, font, self.width - 2 * self.pad, draw)
-        clipped = len(lines) > max_lines
-        for line in lines[:max_lines]:
-            draw.text((self.pad, y), line, font=font, fill=colour)
+        clipped = len(lines) > style["lines"]
+        for line in lines[:style["lines"]]:
+            draw.text((self.pad, y), line, font=font, fill=style["fill"])
             y += int(font.size * 1.42)
         if clipped:
             draw.text((self.pad, y), "…", font=font, fill=LABEL_FG)
@@ -213,8 +251,10 @@ class Panel:
                   clock, font=self.small, fill=LABEL_FG)
 
         y = self.pad + int(self.small.size * 3.0)
-        y = self._section(draw, y, "TASK", prompt, PROMPT_FG, self.bold, 8)
-        y = self._section(draw, y, "THINKING", commentary, THINK_FG, self.body, 22)
+        y = self._section(draw, y, "prompt", prompt)
+        if commentary:
+            kind, text = commentary
+            y = self._section(draw, y, kind, text)
 
         # The action goes at the foot rather than in sequence: it is a caption
         # for the picture beside it, and it is the one line that changes on
