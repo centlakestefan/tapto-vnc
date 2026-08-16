@@ -3,6 +3,8 @@
 
 #include "tapto/ui.h"
 
+#include "tapto/frame_index.h"
+
 #include <iostream>
 
 #include <cstdlib>
@@ -150,6 +152,11 @@ void end_status() {
 }
 
 void emit_intermediate(const std::string& text, bool is_reasoning, bool print_cot) {
+    // Recorded before the print_cot test, deliberately: --quiet is about what
+    // this terminal shows, not about what the run was. A quiet run's frames
+    // should still be able to say what the model was thinking while it worked.
+    frames::record(is_reasoning ? "think" : "say", text);
+
     if (!print_cot || text.empty()) return;
     eraseStatus();
     std::cout << (is_reasoning ? dim(text) : text) << "\n" << std::flush;

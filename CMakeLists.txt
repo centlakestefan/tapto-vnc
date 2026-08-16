@@ -129,6 +129,7 @@ endif()
 add_library(tapto_agent STATIC
   src/claude.cpp
   src/computer_tools.cpp
+  src/frame_index.cpp
   src/gemini.cpp
   src/openai.cpp
   src/config.cpp

@@ -22,13 +22,6 @@ namespace keys {
 // caller owns its lifetime for the whole run.
 constexpr const char* kSession = "vnc.session";
 
-// Optional directory (std::string). When set, every screenshot a tool takes is
-// also written there, numbered in order. The model only ever sees the newest
-// few images — older ones are pruned out of the transcript — so this is the
-// only way to review what the run actually looked like afterwards, and the way
-// to capture a rendering glitch that has already scrolled past.
-constexpr const char* kScreenshotDir = "vnc.screenshot_dir";
-
 // Optional `std::function<bool()>` that re-establishes the connection the
 // tools drive, returning whether it worked. Without it a dropped console ends
 // the run; with it the tools get one attempt to carry on.

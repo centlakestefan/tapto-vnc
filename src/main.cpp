@@ -23,6 +23,7 @@
 #include "tapto/computer_tools.h"
 #include "tapto/config.h"
 #include "tapto/context.h"
+#include "tapto/frame_index.h"
 #include "tapto/gemini.h"
 #include "tapto/input_map.h"
 #include "tapto/log.h"
@@ -924,8 +925,24 @@ int main(int argc, char** argv) {
         });
 
         if (!screenshotDir.empty()) {
-            context.set(tapto::keys::kScreenshotDir, screenshotDir);
+            tapto::frames::set_directory(screenshotDir);
             std::cout << "Saving screenshots to " << screenshotDir << "\n";
+
+            // An establishing shot: the desktop as it was found, before the
+            // model has been asked for anything. Every other frame in the
+            // directory is the consequence of an action, so without this one
+            // there is no record of the state they all started from — and a
+            // movie of the run opens on the result of its first click.
+            tapto::VncSession::Rect whole;
+            tapto::frames::Meta meta;
+            meta.width  = (tapto::screenshotGrid() > 0
+                               ? tapto::VncSession::rulerMarginLeft(1) : 0) + session.width();
+            meta.height = (tapto::screenshotGrid() > 0
+                               ? tapto::VncSession::rulerMarginTop(1) : 0) + session.height();
+            tapto::frames::save(
+                session.screenshotRegionPng(whole, 1, nullptr, tapto::screenshotGrid() > 0,
+                                            tapto::screenshotGrid()),
+                "Connected, before the first prompt", meta);
         }
 
         // The last argument is the API key itself, despite the parameter being
@@ -966,7 +983,13 @@ int main(int argc, char** argv) {
 
         auto runTurn = [&](const std::string& message) {
             try {
+                // Both ends of a turn go into the frame index: what it was
+                // asked, and what it said when it finished. The frames in
+                // between show a machine being operated by nobody until these
+                // two lines say who asked and why.
+                tapto::frames::record("prompt", message);
                 const std::string reply = client->chat(context, message);
+                tapto::frames::record("reply", reply);
                 tapto::ui::print_reply(reply);
             } catch (const std::exception& e) {
                 tapto::ui::end_status();

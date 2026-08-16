@@ -13,9 +13,9 @@
 #include <sstream>
 #include <thread>
 
+#include "tapto/frame_index.h"
 #include "tapto/input_map.h"
 #include "tapto/log.h"
-#include "tapto/version.h"
 #include "tapto/vnc_session.h"
 
 using nlohmann::json;
@@ -25,7 +25,7 @@ namespace {
 
 // How long to let the screen settle after an action before sampling it. Clicks
 // commonly trigger animation, and a screenshot taken too eagerly shows a
-// half-drawn menu — which the model then reasons about as if it were final.
+// half-drawn menu â€” which the model then reasons about as if it were final.
 constexpr auto kActionSettle = std::chrono::milliseconds(400);
 constexpr auto kCaptureTimeout = std::chrono::milliseconds(4000);
 
@@ -50,7 +50,7 @@ int intField(const json& input, const char* name, int fallback = 0) {
 // ones: a missing coordinate becomes 0, so a malformed call turns into a real
 // click at the top-left corner of the screen. Observed as a model omitting x
 // and y, zooming repeatedly on the Recycle Bin, and reasoning at length about
-// why the file list was not there — eleven steps that a one-line complaint
+// why the file list was not there â€” eleven steps that a one-line complaint
 // would have ended.
 std::string requireInt(const json& input, const char* name, int& out) {
     if (!input.is_object() || !input.contains(name) || input[name].is_null()) {
@@ -86,146 +86,11 @@ std::string stringField(const json& input, const char* name, const std::string& 
     return fallback;
 }
 
-// Turns "2x left-clicked at (400,300)" into "2x-left-clicked-at-400-300" so it
-// can serve as a filename on any platform.
-std::string slugify(const std::string& text) {
-    std::string out;
-    bool lastWasDash = false;
-    for (char c : text) {
-        const unsigned char u = static_cast<unsigned char>(c);
-        if (std::isalnum(u)) {
-            out.push_back(static_cast<char>(std::tolower(u)));
-            lastWasDash = false;
-        } else if (!lastWasDash && !out.empty()) {
-            out.push_back('-');
-            lastWasDash = true;
-        }
-    }
-    while (!out.empty() && out.back() == '-') out.pop_back();
-    if (out.size() > 60) out.resize(60);
-    return out.empty() ? "screenshot" : out;
-}
-
-// What a saved frame is, beyond its pixels.
-//
-// A directory of pictures is enough to look through by hand and not enough to
-// assemble anything from. Zooms are a different size from full screens, so they
-// cannot join the same video track unaltered; a frame showing where a click was
-// aimed is not the same kind of evidence as the one showing what the click did;
-// and every frame stands for a stretch of real time that varies from 200 ms to
-// several minutes of the model thinking. None of that is recoverable from a
-// filename, so it goes in the sidecar index instead.
-struct FrameMeta {
-    const char* kind  = "full";     // "full" or "zoom" — differing pixel sizes
-    const char* phase = "";         // "before" / "after" for an action's pair
-    int width = 0, height = 0;      // of the image, margins included
-    const VncSession::Marker* marker = nullptr;   // where a click was aimed
-};
-
-// The highest number any file in `dir` already starts with, or 0 for a
-// directory with none — which is where this process's numbering carries on
-// from.
-//
-// Reads the directory rather than frames.jsonl, because the number's first job
-// is to not overwrite a file that is already there, and the files are the ones
-// that know. An index deleted by hand, or a directory filled by an older build,
-// still numbers correctly.
-int highestSequenceIn(const std::filesystem::path& dir) {
-    int highest = 0;
-    std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-        const std::string name = entry.path().filename().string();
-        size_t digits = 0;
-        while (digits < name.size() && std::isdigit(static_cast<unsigned char>(name[digits]))) {
-            ++digits;
-        }
-        if (digits == 0) continue;
-        try {
-            highest = std::max(highest, std::stoi(name.substr(0, digits)));
-        } catch (const std::exception&) {
-            // A name that starts with more digits than an int holds is not one
-            // of ours; ignore it rather than letting it decide the numbering.
-        }
-    }
-    return highest;
-}
-
-// Writes the screenshot alongside the run, if a directory was configured.
-// Numbered so the sequence is obvious, and labelled so a frame can be found
-// without opening every file. Each one also appends a line to frames.jsonl,
-// which is what a later pass — a contact sheet, a movie — reads instead of
-// guessing from filenames.
-//
-// The numbering and the clock belong to the directory, not to this process. A
-// session stopped and restarted against the same directory continues the
-// timeline: it picks up after the highest number already there, so nothing is
-// overwritten, and the times are absolute so the gap across the restart is a
-// real measured gap rather than a second run beginning again at zero. Deciding
-// what to do with that gap — a cut, a held frame, a caption — is the assembling
-// pass's business, and it can only decide if the number reaching it is true.
-void saveScreenshot(Context& context, const std::vector<uint8_t>& png,
-                    const std::string& label, const FrameMeta& meta = {}) {
-    if (!context.has(keys::kScreenshotDir)) return;
-    const std::string dir = context.get<std::string>(keys::kScreenshotDir);
-    if (dir.empty() || png.empty()) return;
-
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::system_clock::now().time_since_epoch()).count();
-
-    try {
-        std::filesystem::create_directories(dir);
-
-        // Once per process, before the first frame is written.
-        static int sequence = -1;
-        if (sequence < 0) {
-            sequence = highestSequenceIn(dir);
-
-            // A start record, so the assembling pass can see where one process
-            // stopped and the next began — the gap there is somebody at a
-            // keyboard, not the guest sitting still — and which build wrote
-            // what follows, on the same reasoning as the version line in a
-            // trace: the frames outlive the binary that made them.
-            json start{
-                {"event", "start"},
-                {"epoch_ms", now},
-                {"continues_from", sequence},
-                {"version", TAPTO_VNC_VERSION},
-                {"commit", TAPTO_VNC_COMMIT},
-            };
-            std::ofstream index(std::filesystem::path(dir) / "frames.jsonl", std::ios::app);
-            index << start.dump() << "\n";
-        }
-        ++sequence;
-
-        std::ostringstream name;
-        name << std::setfill('0') << std::setw(4) << sequence << "-" << slugify(label) << ".png";
-        const std::filesystem::path path = std::filesystem::path(dir) / name.str();
-
-        std::ofstream file(path, std::ios::binary);
-        file.write(reinterpret_cast<const char*>(png.data()),
-                   static_cast<std::streamsize>(png.size()));
-        file.close();
-
-        json entry{
-            {"seq", sequence},
-            {"file", name.str()},
-            {"epoch_ms", now},
-            {"kind", meta.kind},
-            {"label", label},
-            {"width", meta.width},
-            {"height", meta.height},
-        };
-        if (meta.phase && *meta.phase) entry["phase"] = meta.phase;
-        if (meta.marker) entry["aim"] = json{{"x", meta.marker->x}, {"y", meta.marker->y}};
-
-        // One object per line, appended as the run goes, so a run that dies
-        // half way still leaves a readable index of what it managed to save.
-        std::ofstream index(std::filesystem::path(dir) / "frames.jsonl", std::ios::app);
-        index << entry.dump() << "\n";
-    } catch (const std::exception&) {
-        // Saving is a diagnostic convenience; never fail the tool call over it.
-    }
-}
+// The frame index owns the numbering, the naming, the timestamps and the file
+// itself (tapto/frame_index.h). It lives outside this file because the words
+// that go into it — prompts, replies, the model's reasoning — are recorded
+// where they happen, which is nowhere near a tool call.
+using frames::Meta;
 
 // The most recent vnc_zoom. A file-scope value rather than Context state
 // because there is exactly one session per process.
@@ -253,7 +118,7 @@ ZoomView g_lastZoom;
 // is why this is a gate rather than more prose.
 bool g_requireZoom = false;
 
-// Gridline spacing, in screen pixels, for the full screenshots — 0 leaves them
+// Gridline spacing, in screen pixels, for the full screenshots â€” 0 leaves them
 // plain, which is the default.
 //
 // The zoom's rulers work because reading a labelled line is easier than
@@ -272,7 +137,7 @@ int g_screenshotGrid = 0;
 bool gridOn() { return g_screenshotGrid > 0; }
 
 // Saves the screen an action is about to change, with a dot on the point it is
-// aimed at — the "before" half of a pair whose "after" half is the capture that
+// aimed at â€” the "before" half of a pair whose "after" half is the capture that
 // follows the action.
 //
 // Deliberately not a fresh capture. This renders the composite as it already
@@ -289,19 +154,21 @@ bool gridOn() { return g_screenshotGrid > 0; }
 // part of the remote desktop.
 void saveAimFrame(Context& context, VncSession& session, int x, int y,
                   const std::string& label) {
-    if (!context.has(keys::kScreenshotDir)) return;
+    if (!frames::enabled()) return;
     const VncSession::Marker marker{x, y, 5};
     VncSession::Rect whole;
     // Gridded to match what the model saw, so the frame on disk and the frame
     // it reasoned about are the same picture apart from the dot.
     std::vector<uint8_t> png =
         session.screenshotRegionPng(whole, 1, &marker, gridOn(), g_screenshotGrid);
-    FrameMeta meta;
-    meta.phase  = "before";
-    meta.marker = &marker;
+    Meta meta;
+    meta.phase   = "before";
+    meta.has_aim = true;
+    meta.aim_x   = x;
+    meta.aim_y   = y;
     meta.width  = (gridOn() ? VncSession::rulerMarginLeft(1) : 0) + session.width();
     meta.height = (gridOn() ? VncSession::rulerMarginTop(1)  : 0) + session.height();
-    saveScreenshot(context, png, label, meta);
+    frames::save(png, label, meta);
 }
 
 // Captures the screen and parks it for the backend to deliver.
@@ -329,11 +196,11 @@ std::string captureInto(Context& context, VncSession& session, const std::string
     }
     shot.label = label;
 
-    FrameMeta meta;
+    Meta meta;
     meta.phase  = phase;
     meta.width  = shot.width;
     meta.height = shot.height;
-    saveScreenshot(context, shot.png, label, meta);
+    frames::save(shot.png, label, meta);
     putToolImage(context, shot);
 
     std::ostringstream out;
@@ -343,7 +210,7 @@ std::string captureInto(Context& context, VncSession& session, const std::string
         << " pixels; the attached screenshot shows its current state.";
     if (gridOn()) {
         out << " It is ruled and gridded every " << g_screenshotGrid
-            << " pixels in screen coordinates, the same ones vnc_click takes — read a "
+            << " pixels in screen coordinates, the same ones vnc_click takes â€” read a "
                "position off the rulers rather than judging it. The grid does not make "
                "the picture any sharper, so use vnc_zoom when you need to tell similar "
                "things apart.";
@@ -359,7 +226,7 @@ std::string captureInto(Context& context, VncSession& session, const std::string
 // they were measured: aiming error in a zoomed view grows with the region's
 // height, and 100px keeps it inside a single ~21px list row. 320 across at 3x
 // puts the long side at 960, near the 896 a fixed-budget vision tower resizes
-// to — past that such a model gains nothing, and short of it the crop wastes
+// to â€” past that such a model gains nothing, and short of it the crop wastes
 // budget it has already paid for.
 //
 // What enlarging costs depends on the model, and the two answers are far
@@ -374,7 +241,7 @@ std::string captureInto(Context& context, VncSession& session, const std::string
 // eleven different rectangles, converged on roughly this one by itself, and
 // spent four of those calls being clamped up from something too small to
 // contain its target. What that cost was a ruler whose spacing changed with
-// every call — niceStep() runs on whatever rectangle arrives — so the model
+// every call â€” niceStep() runs on whatever rectangle arrives â€” so the model
 // had to work out the pitch afresh each time, and demonstrably got it wrong.
 // Fixed, the ruler is identical in every zoom the model will ever see.
 constexpr int kZoomWidth  = 320;
@@ -387,8 +254,8 @@ constexpr int kZoomScale  = 3;
 // the screen is a rounding slip, not a reason to abandon the turn.
 //
 // There is no coordinate conversion here, and deliberately so. Positions are
-// screen pixels everywhere — in the tool schemas, in the zoom rulers, in the
-// status line and in the saved filenames — so a number the model reads off a
+// screen pixels everywhere â€” in the tool schemas, in the zoom rulers, in the
+// status line and in the saved filenames â€” so a number the model reads off a
 // ruler is the same number vnc_click receives. An earlier build could rescale
 // from a normalised 0..N grid for models trained that way; it made the pixel
 // contract conditional on a flag, and every accuracy problem worth solving
@@ -409,7 +276,7 @@ json coordinateSchema(const char* xDesc, const char* yDesc) {
 }
 
 // Spelled out in every coordinate description because some vision models
-// default to a normalised grid — the Gemma/PaliGemma lineage is trained on
+// default to a normalised grid â€” the Gemma/PaliGemma lineage is trained on
 // <locNNNN> tokens over a 0..1024 space, and will answer that way unasked. The
 // tools take pixels and only pixels, so the schema has to say so.
 constexpr const char* kPixelNote =
@@ -561,7 +428,7 @@ std::string doZoom(Context& context, const json& input) {
     }
     clampToScreen(session, centreX, centreY);
 
-    // Centred on the point asked for, then slid back inside the screen — slid,
+    // Centred on the point asked for, then slid back inside the screen â€” slid,
     // not shrunk. A region that lost its edge would render at a different size,
     // and every zoom having the same size is the whole reason this is fixed:
     // the ruler's spacing is derived from the region, so a smaller region means
@@ -600,11 +467,11 @@ std::string doZoom(Context& context, const json& input) {
     shot.width  = VncSession::rulerMarginLeft(kZoomScale) + region.width  * kZoomScale;
     shot.height = VncSession::rulerMarginTop(kZoomScale)  + region.height * kZoomScale;
     shot.label  = label.str();
-    FrameMeta meta;
+    Meta meta;
     meta.kind   = "zoom";
     meta.width  = shot.width;
     meta.height = shot.height;
-    saveScreenshot(context, shot.png, shot.label, meta);
+    frames::save(shot.png, shot.label, meta);
     putToolImage(context, shot);
 
     std::ostringstream out;
@@ -622,7 +489,7 @@ std::string doZoom(Context& context, const json& input) {
            "something in this view, find the gridlines nearest it and read "
            "their labels off the rulers, then pass that straight to vnc_click."
         << " Be careful not to give vnc_click a position measured in this "
-           "image's own pixels — the image is larger than the region it shows "
+           "image's own pixels â€” the image is larger than the region it shows "
            "and starts at its top-left corner, so those numbers are much too "
            "big. If you have measured something that way, convert it first: "
         << "screen_x = " << region.x << " + (image_x - "
@@ -846,7 +713,7 @@ bool tryReconnect(Context& context, const std::string& tool, int idle,
 }
 
 // Re-running a tool after a reconnect is only safe if running it twice is the
-// same as running it once. Looking at the screen is; changing it is not — a
+// same as running it once. Looking at the screen is; changing it is not â€” a
 // click that died between press and release may or may not have reached the
 // guest, and repeating an action has already cost this project a duplicated
 // installation. A pointer move is idempotent by position, so it qualifies.
@@ -879,7 +746,7 @@ ToolExecutorFn guardConnection(std::string name, ToolExecutorFn inner) {
             // took the connection with it gets here.
             if (session.isConnected()) throw;
 
-            // Read before reconnecting — the handshake counts as traffic and
+            // Read before reconnecting â€” the handshake counts as traffic and
             // clears the error, resetting the two things worth recording.
             const int idle = session.idleSeconds();
             // The RFB layer's own account beats the symptom the caller saw:
@@ -897,7 +764,7 @@ ToolExecutorFn guardConnection(std::string name, ToolExecutorFn inner) {
             std::ostringstream out;
             out << "ERROR: the connection dropped while " << name << " was running and "
                    "has been re-established. Whether it reached the machine at all is "
-                   "unknown. Do not simply repeat it — look at the screen first and "
+                   "unknown. Do not simply repeat it â€” look at the screen first and "
                    "work out whether it happened. ";
             out << captureInto(context, session, "Reconnected after a dropped connection");
             return out.str();
@@ -936,7 +803,7 @@ std::vector<ToolSpec> makeComputerTools() {
             description +=
                 "\nThe screenshot carries a numbered ruler along its top and left edges "
                 "and a grid drawn every " + std::to_string(g_screenshotGrid) +
-                " pixels, labelled in screen coordinates — the same ones vnc_click "
+                " pixels, labelled in screen coordinates â€” the same ones vnc_click "
                 "takes. Use it to read a position rather than estimate one.\n"
                 "It shows you where things are, not what they are: the whole screen "
                 "still has to fit into one image, so anything small stays hard to "
@@ -976,15 +843,15 @@ std::vector<ToolSpec> makeComputerTools() {
             "Look closely at one part of the screen. Returns the " +
             std::to_string(kZoomWidth) + "x" + std::to_string(kZoomHeight) +
             " pixel area around the point you name, enlarged " + std::to_string(kZoomScale) +
-            "x — about five rows of a list. The size and the magnification are always "
+            "x â€” about five rows of a list. The size and the magnification are always "
             "these; you only choose where to look.\n"
-            "Use it whenever you need to tell apart things that are close together — which "
+            "Use it whenever you need to tell apart things that are close together â€” which "
             "row of a file list or menu is which, the exact text in a small label, the "
-            "state of a checkbox — and always before clicking something in a dense list. A "
+            "state of a checkbox â€” and always before clicking something in a dense list. A "
             "full screenshot has to represent the entire screen at once, so fine detail is "
             "lost; a zoom spends all of it on this one area.\n"
             "The result is ruled and gridded in screen coordinates, so you do not have to "
-            "judge where something is — you can read it off. Find the target, look at the "
+            "judge where something is â€” you can read it off. Find the target, look at the "
             "gridlines that bracket it, read the numbers on the rulers, and click that "
             "position with vnc_click.\n"
             "If what you wanted is not in the view, zoom again on where it actually is. A "
@@ -1058,8 +925,8 @@ std::vector<ToolSpec> makeComputerTools() {
 
     tools.push_back(ToolSpec{
         "vnc_wait",
-        "Wait for the screen to change on its own — while an application starts, a page "
-        "loads, or an installer progresses — then take a screenshot.",
+        "Wait for the screen to change on its own â€” while an application starts, a page "
+        "loads, or an installer progresses â€” then take a screenshot.",
         objectSchema(json{{"ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", kMaxWaitMs},
                                   {"description", "Milliseconds to wait. Defaults to 1000."}}}},
                      {}),
