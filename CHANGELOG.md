@@ -60,6 +60,18 @@ carries everything else.
   screenshot rather than presenting the model with a black picture it cannot
   interpret. It runs on reconnect too, which follows the longest idle in a run.
   `--wake off` restores the old behaviour. ([401a58b])
+- `frames.jsonl` records the words as well as the pictures: the prompt each
+  turn was given, the reply it ended with, and the model's reasoning as it
+  worked, each stamped with when it happened. Recorded regardless of `--quiet`,
+  which governs what the terminal shows rather than what the run was.
+  ([e8debd0])
+- A frame is saved the moment a session connects, labelled "Connected, before
+  the first prompt". Every other frame is the consequence of an action, so
+  without it nothing records the state they all started from. ([e8debd0])
+- `make-movie.py` draws a panel beside the screen carrying that task and
+  reasoning; `--panel right` moves it, `--panel off` removes it. Never burnt
+  into the saved frames, which stay a record of what the guest displayed.
+  ([2818f87])
 - `tools/make-movie.py` assembles a `--screenshots` directory into an mp4,
   holding each frame for the time until the next one arrived and clamping that
   at both ends. A four-hour, 168-frame run becomes 5½ minutes and 15 MB, or
@@ -103,6 +115,14 @@ measurements taken against the old schema do not carry over.
 - Windows socket errors are reported rather than whatever the thread-local
   buffer happened to hold when `FormatMessage` wrote nothing, and their
   trailing `.\r\n` no longer splits a log line in two. ([ccc51fc])
+- A movie no longer opens on five seconds of black. x264's frame-reorder delay
+  became an edit list skipping the head of the file — invisible when a frame is
+  1/30 s, five seconds when a frame is 2.5 s. B-frames are off. ([2818f87])
+- Frames reach the encoder exactly as they were saved. The FFmpeg filter graph
+  that letterboxed zooms was also resampling and dithering the full-size frames
+  on the way past: mean absolute error against the source went from 6.97 to
+  1.25 once Pillow replaced it, and the same run encodes to 3 MB instead of 14
+  at the same quality setting. ([2818f87])
 - `--resolution` no longer ends the run when VMware Tools is unavailable. It
   waits the full timeout instead of nine seconds — a guest that has just booted
   is exactly the case where the size is wrong and worth setting — then reports
@@ -195,3 +215,5 @@ screenshots as tools. ([3d11be9])
 [c8dfd86]: https://github.com/centlakestefan/tapto-vnc/commit/c8dfd86
 [401a58b]: https://github.com/centlakestefan/tapto-vnc/commit/401a58b
 [30e48eb]: https://github.com/centlakestefan/tapto-vnc/commit/30e48eb
+[e8debd0]: https://github.com/centlakestefan/tapto-vnc/commit/e8debd0
+[2818f87]: https://github.com/centlakestefan/tapto-vnc/commit/2818f87
