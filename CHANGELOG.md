@@ -88,6 +88,12 @@ measurements taken against the old schema do not carry over.
 - Windows socket errors are reported rather than whatever the thread-local
   buffer happened to hold when `FormatMessage` wrote nothing, and their
   trailing `.\r\n` no longer splits a log line in two. ([ccc51fc])
+- `--resolution` no longer ends the run when VMware Tools is unavailable. It
+  waits the full timeout instead of nine seconds — a guest that has just booted
+  is exactly the case where the size is wrong and worth setting — then reports
+  what it found and connects at the guest's current size. The first refusal
+  reads `guest.toolsStatus`, so `toolsNotInstalled` stops immediately rather
+  than waiting for something that will never arrive. ([75842dd])
 
 ## [0.2.0] — 2026-08-15
 
@@ -170,3 +176,4 @@ screenshots as tools. ([3d11be9])
 [a633cd5]: https://github.com/centlakestefan/tapto-vnc/commit/a633cd5
 [5d7918a]: https://github.com/centlakestefan/tapto-vnc/commit/5d7918a
 [ba61887]: https://github.com/centlakestefan/tapto-vnc/commit/ba61887
+[75842dd]: https://github.com/centlakestefan/tapto-vnc/commit/75842dd
