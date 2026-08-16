@@ -242,6 +242,24 @@ The store is shared with `tapto-code`, which can write it for you:
 | `--layout <name>` | keyboard layout of the remote machine |
 | `--type-test <text>` | type a string and save the result, no model involved |
 | `--quiet` | hide the model's intermediate reasoning |
+| `--version` | version and the commit it was built from |
+
+### Versions
+
+[CHANGELOG.md](CHANGELOG.md) records what changed and what counts as a breaking
+change — for a program, that is the flags, the config keys, and the tools the
+model sees, rather than any C++ API.
+
+Every build stamps its version and originating commit, printed by `--version`
+and written as the first line of each trace:
+
+```
+tapto-vnc 0.2.0 (v0.2.0-3-g1a2b3c4-dirty)
+```
+
+Worth having because the lasting artifact of a run is its trace. Source moves
+on, a failed link leaves the previous binary in place, and `-dirty` marks a
+build that had uncommitted changes and so cannot be reproduced from the hash.
 
 ## Tools the model gets
 

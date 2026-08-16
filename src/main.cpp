@@ -30,6 +30,7 @@
 #include "tapto/paths.h"
 #include "tapto/secret.h"
 #include "tapto/ui.h"
+#include "tapto/version.h"
 #include "tapto/vmware_console.h"
 #include "tapto/vnc_session.h"
 
@@ -213,8 +214,20 @@ When the task you were given is complete, say so and stop. Do not start it over.
 
 Tell the user what you observe and what you are doing, in plain language. When a task is done, say what the final state of the screen is.)";
 
+// "tapto-vnc 0.2.0 (v0.1.0-9-gcef058c)" — the release, then the exact commit.
+//
+// The commit is the part that earns its place. A run's lasting artifact is its
+// trace, and a trace whose build is only implied is a trap: source moves on, a
+// link that failed leaves yesterday's binary on disk, and the behaviour being
+// puzzled over may not be in the code being read. "-dirty" says the build had
+// uncommitted changes, so it cannot be reproduced from the hash alone.
+std::string versionLine() {
+    return std::string("tapto-vnc ") + TAPTO_VNC_VERSION + " (" + TAPTO_VNC_COMMIT + ")";
+}
+
 void usage(const char* argv0) {
     std::cout
+        << versionLine() << "\n\n"
         << "Usage: " << argv0 << " [connection options] [agent options] [task]\n\n"
         << "Direct VNC:\n"
         << "  --host <host>       VNC server host (default: localhost)\n"
@@ -271,7 +284,8 @@ void usage(const char* argv0) {
         << "                      needs NumLock on. (config key altcode-fallback)\n"
         << "  --type-test <text>  Type <text> into whatever has focus, save\n"
         << "                      layout-test.png, and exit. No model involved —\n"
-        << "                      use it to check a layout against a real guest.\n\n"
+        << "                      use it to check a layout against a real guest.\n"
+        << "  --version           Version and the commit it was built from\n\n"
         << "A provider is a named block in the config store, so several backends —\n"
         << "including two local servers speaking the same API — coexist in one file:\n\n"
         << "  qwen36-provider-type = openai        gemma4-provider-type = openai\n"
@@ -379,6 +393,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
+        if (arg == "--version") { std::cout << versionLine() << "\n"; return 0; }
         if (arg == "--dump-tools") {
             // Print the tool definitions exactly as they go on the wire, so a
             // schema problem can be seen without spending an API call.
@@ -658,7 +673,13 @@ int main(int argc, char** argv) {
     // than in a file only the user can read.
     if (!resolveSecretInPlace("--password", vnc.password)) return 2;
 
-    if (!trace.empty()) mclog_set_file(trace);
+    if (!trace.empty()) {
+        mclog_set_file(trace);
+        // First line of every trace, before anything can go wrong: which build
+        // wrote what follows. The file is appended to across runs, so this also
+        // separates one run from the next.
+        mclog(versionLine() + "\n");
+    }
 
     try {
         tapto::VncSession session;
