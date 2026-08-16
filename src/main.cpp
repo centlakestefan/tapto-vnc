@@ -229,7 +229,10 @@ const char* kSystemPromptZoom = R"(- A full screenshot has to show the whole scr
 //
 // Off by default because it is measured once, not established, and it spends a
 // step on every click. Prompt only: nothing refuses a click that skipped the
-// move, unlike --require-zoom. If it earns its keep, the gate is the next step.
+// move, unlike --require-zoom. Should a model turn up that needs the rule
+// enforced rather than asked for, that arrives as a third value on this switch
+// — `--move-first force` — and not as a second flag. Off, asked and enforced
+// are settings of one idea; two flags could be set to contradict each other.
 const char* kMoveGuidance =
     "- Move before you click. Call vnc_move to the position you are about to click, look at "
     "the screenshot it returns, and only then call vnc_click at that same position. This "

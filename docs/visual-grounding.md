@@ -421,6 +421,11 @@ every action, a check that the click matches the move — and it is deliberately
 not built yet, because a rule the model follows because it was asked is cheap
 to withdraw and a rule enforced in code is not.
 
+If a model turns up that needs it enforced, the gate arrives as a third value
+here — `--move-first force` — rather than as a separate `--require-move`. Off,
+asked and enforced are three settings of one idea, and on one switch they
+cannot be set to contradict each other.
+
 **Why it might be worth a step.** A hover reaction is the *guest* saying what
 is under the pointer: a button lightens, a row highlights, a close button turns
 red. That is a different kind of evidence from the model's reading of a
