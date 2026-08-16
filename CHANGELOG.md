@@ -60,6 +60,11 @@ carries everything else.
   screenshot rather than presenting the model with a black picture it cannot
   interpret. It runs on reconnect too, which follows the longest idle in a run.
   `--wake off` restores the old behaviour. ([401a58b])
+- `tools/make-movie.py` assembles a `--screenshots` directory into an mp4,
+  holding each frame for the time until the next one arrived and clamping that
+  at both ends. A four-hour, 168-frame run becomes 5½ minutes and 15 MB, or
+  6 MB at `--crf 28 --width 960`. Needs only PyAV, which carries FFmpeg in its
+  wheel: `pip install -r tools/requirements.txt`. ([30e48eb])
 - Screenshot numbering continues where a directory left off, so a session
   stopped and restarted against the same directory extends one timeline instead
   of overwriting it from `0001` again. Each process appends a start record
@@ -189,3 +194,4 @@ screenshots as tools. ([3d11be9])
 [75842dd]: https://github.com/centlakestefan/tapto-vnc/commit/75842dd
 [c8dfd86]: https://github.com/centlakestefan/tapto-vnc/commit/c8dfd86
 [401a58b]: https://github.com/centlakestefan/tapto-vnc/commit/401a58b
+[30e48eb]: https://github.com/centlakestefan/tapto-vnc/commit/30e48eb
