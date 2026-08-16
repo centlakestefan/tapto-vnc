@@ -264,9 +264,23 @@ without a floor the click pairs flash past unseen.
 
 Beside the screen is a panel carrying what the run was asked to do and what the
 model was thinking while it did it, both read from the index rather than burnt
-into the frames. `--panel right` moves it, `--panel off` removes it. The other
-knobs worth knowing are `--max-ms` (the ceiling that makes idle watchable),
-`--crf` and `--width`.
+into the frames. `--panel right` moves it, `--panel off` removes it.
+
+The cut follows one rule: **one change per beat**. When new text appears it is
+shown against the screen as it still was — nothing moves, and that beat is for
+reading, its length set by how much there is to read. Then the screen changes
+with the text standing still, and that beat is for watching. A frame that
+changed both at once could only be half seen, whichever half you chose.
+
+`--list` prints the cut without encoding it, which is the quick way to tune
+`--read-cps`, `--max-ms` and the rest:
+
+```
+  2.5s read   4.5s  #2  [say] I'll start by taking a screenshot...
+  7.0s watch  2.5s  #2
+  9.5s read   7.0s  #3  [say] I can see the File Explorer showing...
+ 16.5s watch  1.5s  #3  About to left-click (499,543)
+```
 
 The dependencies are PyAV, which carries FFmpeg inside its wheel so there is no
 system ffmpeg to install, and Pillow, which draws the panel and composes the

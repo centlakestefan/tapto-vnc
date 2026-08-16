@@ -359,6 +359,14 @@ def main():
                         help="minimum hold on an 'about to click' frame")
     parser.add_argument("--hold-ms", type=int, default=3000,
                         help="how long the final frame stays up")
+    parser.add_argument("--read-cps", type=int, default=22,
+                        help="reading speed in characters per second, for the beat that shows"
+                             " new text against the screen it was written about. 0 disables"
+                             " the split")
+    parser.add_argument("--read-min-ms", type=int, default=1400,
+                        help="shortest reading beat")
+    parser.add_argument("--read-max-ms", type=int, default=7000,
+                        help="longest reading beat, however much was written")
     parser.add_argument("--fps", type=int, default=12,
                         help="constant frame rate; each still is repeated to fill its time")
     parser.add_argument("--vfr", action="store_true",
@@ -366,6 +374,9 @@ def main():
                              " some players show black until several samples have arrived")
     parser.add_argument("--zooms", choices=("fit", "skip"), default="fit",
                         help="what to do with zoom frames, which are not screen-sized")
+    parser.add_argument("--list", action="store_true",
+                        help="print the cut — every beat, when it starts and why — and stop."
+                             " Pacing is guesswork until you can see it laid out")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -417,6 +428,60 @@ def main():
         chosen.append((frame, path, held, prompt, commentary))
     if not chosen:
         sys.exit("no usable frames")
+
+    # One change per beat.
+    #
+    # A frame that arrives with new words in the panel changes two things at
+    # once, and a viewer can attend to one: read the panel and the screen has
+    # already moved on, watch the screen and the reasoning went past unread.
+    # Holding the frame longer does not help, because it holds both.
+    #
+    # So the beat is split. First the new text against the screen as it still
+    # was — nothing moves, and this is the beat that is read. Then the screen
+    # changes with the text standing still — nothing new to read, and this is
+    # the beat that is watched. The reading beat repeats the previous
+    # screenshot, which is why it is nearly free to encode: only the panel
+    # differs from the frame before it.
+    #
+    # Its length comes from how much there is to read rather than from the
+    # clock, since it is the one thing in this movie that is not a record of
+    # elapsed time.
+    def reading_ms(text):
+        if not args.read_cps or not text:
+            return 0
+        return max(args.read_min_ms,
+                   min(args.read_max_ms, int(1000 * len(text) / args.read_cps)))
+
+    beats = []                 # (path, frame, held, prompt, commentary)
+    previous_path = None
+    previous_text = (None, None)
+    for frame, path, held, prompt, commentary in chosen:
+        panel_text = (prompt, commentary[1] if commentary else None)
+        if args.read_cps and previous_path and panel_text != previous_text:
+            # Only what is actually new has to be read: a fresh task is read in
+            # full, but when the task is unchanged the reading beat is paced by
+            # the new commentary alone.
+            fresh = (commentary[1] if commentary else "") if prompt == previous_text[0] \
+                else "".join(part for part in panel_text if part)
+            pause = reading_ms(fresh)
+            if pause:
+                beats.append((previous_path, frame, pause, prompt, commentary))
+        beats.append((path, frame, held, prompt, commentary))
+        previous_path, previous_text = path, panel_text
+
+    if args.list:
+        at = 0
+        for path, frame, held, prompt, commentary in beats:
+            reading = path != directory / frame["file"]
+            kind = "read " if reading else "watch"
+            said = ""
+            if commentary:
+                said = f"  [{commentary[0]}] {plain(commentary[1])[:60].replace(chr(10), ' ')}"
+            print(f"{at / 1000:7.1f}s {kind} {held / 1000:4.1f}s  "
+                  f"#{frame['seq']:<4} {frame['label'][:40]:<40}{said}")
+            at += held
+        print(f"\n{len(beats)} beats, {at / 60000:.1f} min")
+        return
 
     panel = Panel(panel_w, screen_h, fonts, frames[0]["epoch_ms"]) if panel_w else None
 
@@ -479,7 +544,7 @@ def main():
         return at + (hold_ms if args.vfr else repeats * step)
 
     try:
-        for frame, path, held, prompt, commentary in chosen:
+        for path, frame, held, prompt, commentary in beats:
             with Image.open(path) as opened:
                 shot = opened.convert("RGB")
             if shot.size != (screen_w, screen_h):
@@ -493,7 +558,7 @@ def main():
             pts = emit(canvas, pts, held)
             written += 1
             if not args.quiet and written % 25 == 0:
-                print(f"  {written}/{len(chosen)} frames")
+                print(f"  {written}/{len(beats)} beats")
 
         # A sample's duration is implied by the next sample's timestamp, so the
         # last one has none: without this the movie cuts the moment the final
@@ -510,8 +575,10 @@ def main():
         real_ms = frames[-1]["epoch_ms"] - frames[0]["epoch_ms"]
         print()
         print(f"wrote {out_path}")
-        print(f"  frames    {written} of {len(frames)} ({fitted} fitted from another size)"
-              + ("" if args.vfr else f", {samples} samples at {args.fps} fps"))
+        reading = len(beats) - len(chosen)
+        print(f"  frames    {len(chosen)} of {len(frames)} ({fitted} fitted from another size)")
+        print(f"  beats     {written}, of which {reading} are reading beats"
+              + ("" if args.vfr else f"; {samples} samples at {args.fps} fps"))
         print(f"  plays in  {pts / 60000:.1f} min, from {real_ms / 60000:.1f} min of real time")
         print(f"  size      {out_path.stat().st_size / 1e6:.1f} MB at {out_w}x{out_h},"
               f" crf {args.crf}, encoded in {time.monotonic() - started:.0f}s")
