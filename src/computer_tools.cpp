@@ -15,6 +15,7 @@
 
 #include "tapto/input_map.h"
 #include "tapto/log.h"
+#include "tapto/version.h"
 #include "tapto/vnc_session.h"
 
 using nlohmann::json;
@@ -121,29 +122,81 @@ struct FrameMeta {
     const VncSession::Marker* marker = nullptr;   // where a click was aimed
 };
 
+// The highest number any file in `dir` already starts with, or 0 for a
+// directory with none — which is where this process's numbering carries on
+// from.
+//
+// Reads the directory rather than frames.jsonl, because the number's first job
+// is to not overwrite a file that is already there, and the files are the ones
+// that know. An index deleted by hand, or a directory filled by an older build,
+// still numbers correctly.
+int highestSequenceIn(const std::filesystem::path& dir) {
+    int highest = 0;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        const std::string name = entry.path().filename().string();
+        size_t digits = 0;
+        while (digits < name.size() && std::isdigit(static_cast<unsigned char>(name[digits]))) {
+            ++digits;
+        }
+        if (digits == 0) continue;
+        try {
+            highest = std::max(highest, std::stoi(name.substr(0, digits)));
+        } catch (const std::exception&) {
+            // A name that starts with more digits than an int holds is not one
+            // of ours; ignore it rather than letting it decide the numbering.
+        }
+    }
+    return highest;
+}
+
 // Writes the screenshot alongside the run, if a directory was configured.
 // Numbered so the sequence is obvious, and labelled so a frame can be found
 // without opening every file. Each one also appends a line to frames.jsonl,
 // which is what a later pass — a contact sheet, a movie — reads instead of
 // guessing from filenames.
+//
+// The numbering and the clock belong to the directory, not to this process. A
+// session stopped and restarted against the same directory continues the
+// timeline: it picks up after the highest number already there, so nothing is
+// overwritten, and the times are absolute so the gap across the restart is a
+// real measured gap rather than a second run beginning again at zero. Deciding
+// what to do with that gap — a cut, a held frame, a caption — is the assembling
+// pass's business, and it can only decide if the number reaching it is true.
 void saveScreenshot(Context& context, const std::vector<uint8_t>& png,
                     const std::string& label, const FrameMeta& meta = {}) {
     if (!context.has(keys::kScreenshotDir)) return;
     const std::string dir = context.get<std::string>(keys::kScreenshotDir);
     if (dir.empty() || png.empty()) return;
 
-    static int sequence = 0;
-    ++sequence;
-
-    // Relative to the first frame rather than the wall clock: what a movie
-    // needs is how long each frame stood for, and the run's own start is the
-    // only zero every frame shares.
-    static const auto origin = std::chrono::steady_clock::now();
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::steady_clock::now() - origin).count();
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch()).count();
 
     try {
         std::filesystem::create_directories(dir);
+
+        // Once per process, before the first frame is written.
+        static int sequence = -1;
+        if (sequence < 0) {
+            sequence = highestSequenceIn(dir);
+
+            // A start record, so the assembling pass can see where one process
+            // stopped and the next began — the gap there is somebody at a
+            // keyboard, not the guest sitting still — and which build wrote
+            // what follows, on the same reasoning as the version line in a
+            // trace: the frames outlive the binary that made them.
+            json start{
+                {"event", "start"},
+                {"epoch_ms", now},
+                {"continues_from", sequence},
+                {"version", TAPTO_VNC_VERSION},
+                {"commit", TAPTO_VNC_COMMIT},
+            };
+            std::ofstream index(std::filesystem::path(dir) / "frames.jsonl", std::ios::app);
+            index << start.dump() << "\n";
+        }
+        ++sequence;
+
         std::ostringstream name;
         name << std::setfill('0') << std::setw(4) << sequence << "-" << slugify(label) << ".png";
         const std::filesystem::path path = std::filesystem::path(dir) / name.str();
@@ -156,7 +209,7 @@ void saveScreenshot(Context& context, const std::vector<uint8_t>& png,
         json entry{
             {"seq", sequence},
             {"file", name.str()},
-            {"ms", elapsed},
+            {"epoch_ms", now},
             {"kind", meta.kind},
             {"label", label},
             {"width", meta.width},

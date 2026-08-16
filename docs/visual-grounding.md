@@ -545,12 +545,30 @@ without opening anything:
 ```
 
 Alongside them, `frames.jsonl` carries one object per frame — sequence, file,
-milliseconds since the first frame, `kind` (`full` or `zoom`), `phase`, label,
-image size, and the aim point where there is one. It exists because the things
-a later pass needs are the things a filename cannot carry: zooms are a
-different size from full screens, so they cannot join a video track unaltered,
-and every frame stands for a stretch of real time that runs from 200 ms to
-several minutes of the model thinking.
+`epoch_ms`, `kind` (`full` or `zoom`), `phase`, label, image size, and the aim
+point where there is one. It exists because the things a later pass needs are
+the things a filename cannot carry: zooms are a different size from full
+screens, so they cannot join a video track unaltered, and every frame stands
+for a stretch of real time that runs from 200 ms to several minutes of the
+model thinking.
+
+**The timeline belongs to the directory, not to the process.** Stop a session
+and start another against the same directory and the numbering carries on from
+the highest file already there, so nothing is overwritten and the sequence
+still reads as one run. Each process writes a start record first:
+
+```json
+{"event":"start","epoch_ms":1786881710107,"continues_from":9,
+ "version":"0.2.0","commit":"v0.2.0-24-gc7f232e"}
+```
+
+That is where an assembling pass finds the seams — the gap at a restart is
+somebody at a keyboard, not the guest sitting still, and only the reader can
+decide whether that becomes a cut, a held frame or a caption. Times are
+absolute for the same reason: a per-process clock would restart at zero and
+quietly claim the second session began the instant the first ended. The record
+also names the build, on the same reasoning as the version line in a trace —
+the frames outlive the binary that made them.
 
 The zoom filename records the region's **top-left corner**, not the point the
 model asked for — that is what was rendered, and it is what the error has to be
