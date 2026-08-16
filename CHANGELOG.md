@@ -50,6 +50,11 @@ carries everything else.
 - `tools/fake-rfb.ps1`, a stub RFB server that fails on purpose: `reset`, `fin`
   and `hold`, which produce three distinct traces. Recovery is otherwise only
   testable by waiting for a real drop. ([a633cd5])
+- `--screenshots <dir>` writes `frames.jsonl` beside the images: one object per
+  frame with its sequence, file, milliseconds since the first frame, kind
+  (`full` or `zoom`), phase, label, size and aim point. Assembling frames into
+  a contact sheet or a movie needs facts a filename cannot carry — not least
+  that zooms and full screens are different sizes. ([ba61887])
 
 ### Changed
 
@@ -59,9 +64,14 @@ carries everything else.
   with every call, which models misread. ([5b02ffd])
 - **Breaking:** `vnc_click_zoom` is gone and so is `--coord-span`. There is one
   coordinate system — screen pixels — instead of two live at once. ([fce9dee])
+- A click saved with `--screenshots` now writes two frames — the screen it aimed
+  at, carrying the red dot, and then the screen it produced. The dot used to go
+  on the result, which is the one picture it cannot be measured against: the
+  target may not still be on screen. Drags mark the point they grab. Neither
+  frame is ever shown to the model. ([ba61887])
 
-Both are changes to the tools the model sees, so prompts and measurements taken
-against the old schema do not carry over.
+Both zoom entries are changes to the tools the model sees, so prompts and
+measurements taken against the old schema do not carry over.
 
 ### Fixed
 
@@ -159,3 +169,4 @@ screenshots as tools. ([3d11be9])
 [4bf4274]: https://github.com/centlakestefan/tapto-vnc/commit/4bf4274
 [a633cd5]: https://github.com/centlakestefan/tapto-vnc/commit/a633cd5
 [5d7918a]: https://github.com/centlakestefan/tapto-vnc/commit/5d7918a
+[ba61887]: https://github.com/centlakestefan/tapto-vnc/commit/ba61887
