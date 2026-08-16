@@ -367,6 +367,12 @@ def main():
                         help="shortest reading beat")
     parser.add_argument("--read-max-ms", type=int, default=7000,
                         help="longest reading beat, however much was written")
+    parser.add_argument("--reply-max-ms", type=int, default=16000,
+                        help="longest reading beat for a turn's closing reply, which is"
+                             " usually the longest passage in the run and the one worth"
+                             " finishing")
+    parser.add_argument("--turn-ms", type=int, default=5000,
+                        help="extra hold at the end of a turn, before the next task appears")
     parser.add_argument("--fps", type=int, default=12,
                         help="constant frame rate; each still is repeated to fill its time")
     parser.add_argument("--vfr", action="store_true",
@@ -446,16 +452,16 @@ def main():
     # Its length comes from how much there is to read rather than from the
     # clock, since it is the one thing in this movie that is not a record of
     # elapsed time.
-    def reading_ms(text):
+    def reading_ms(text, cap=None):
         if not args.read_cps or not text:
             return 0
         return max(args.read_min_ms,
-                   min(args.read_max_ms, int(1000 * len(text) / args.read_cps)))
+                   min(cap or args.read_max_ms, int(1000 * len(text) / args.read_cps)))
 
     beats = []                 # (path, frame, held, prompt, commentary)
     previous_path = None
     previous_text = (None, None)
-    for frame, path, held, prompt, commentary in chosen:
+    for index, (frame, path, held, prompt, commentary) in enumerate(chosen):
         panel_text = (prompt, commentary[1] if commentary else None)
         if args.read_cps and previous_path and panel_text != previous_text:
             # Only what is actually new has to be read: a fresh task is read in
@@ -463,10 +469,23 @@ def main():
             # the new commentary alone.
             fresh = (commentary[1] if commentary else "") if prompt == previous_text[0] \
                 else "".join(part for part in panel_text if part)
-            pause = reading_ms(fresh)
+
+            # A closing reply gets a longer ceiling than a passing remark. It is
+            # usually the longest thing written in the run, it is an account of
+            # everything that just happened, and it is the one passage a viewer
+            # has a reason to finish rather than skim.
+            cap = args.reply_max_ms if commentary and commentary[0] == "reply" else None
+            pause = reading_ms(fresh, cap)
             if pause:
                 beats.append((previous_path, frame, pause, prompt, commentary))
-        beats.append((path, frame, held, prompt, commentary))
+
+        # The end of a turn is a paragraph break, and the movie had none: the
+        # reply's beat ended and the next task appeared while the eye was still
+        # on the old one. Holding the closing frame gives the turn somewhere to
+        # land before the next begins.
+        ends_turn = index + 1 == len(chosen) or chosen[index + 1][3] != prompt
+        beats.append((path, frame, held + (args.turn_ms if ends_turn else 0),
+                      prompt, commentary))
         previous_path, previous_text = path, panel_text
 
     if args.list:
