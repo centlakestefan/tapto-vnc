@@ -293,7 +293,8 @@ void usage(const char* argv0) {
         << "  --display <n>       Display number; port is 5900+n\n"
         << "  --password <pw>     VNC password, or where it lives (see below)\n\n"
         << "VMware console (WebMKS) — naming a VM selects this mode:\n"
-        << "  --vm <name>         VM name (exact, case-sensitive)\n"
+        << "  --vm <name>         VM name (exact, case-sensitive; overrides\n"
+        << "                      config key default-vm)\n"
         << "  --vcenter <host>    Overrides config key vcenter-host\n"
         << "  --user <name>       Overrides $TAPTO_VCENTER_USER / vcenter-user\n"
         << "  --insecure          Skip TLS verification (or vcenter-insecure=true)\n"
@@ -724,8 +725,9 @@ int main(int argc, char** argv) {
     std::cout << "Provider " << provider << " (" << dialect << ") " << model
               << " at " << host << "\n";
 
-    // Naming a VM selects the VMware console; everything needed to reach it can
-    // live in the config store, so the usual invocation is just --vm <name>.
+    // Naming a VM selects the VMware console; everything else in that branch
+    // can live in the config store, and with default-vm so can the name itself.
+    if (vmName.empty()) vmName = settings.valueOr("default-vm", "");
     const bool vmwareMode = !vmName.empty();
     if (vmwareMode) {
         if (vcenter.host.empty())     vcenter.host     = settings.valueOr("vcenter-host", "");
