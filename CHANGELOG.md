@@ -138,6 +138,14 @@ measurements taken against the old schema do not carry over.
   list and matches the name client-side, accepting a response that spells the
   name `name` or `vm_name`, and still fails on no or multiple matches.
   ([6476df4])
+- A VCSA 8.0 WebMKS console no longer fails the WebSocket handshake. Its
+  websockify frontend spells the header `Sec-Websocket-Accept` (lowercase
+  `s`), which the old case-sensitive match rejected even when the handshake
+  value was correct; the header name is now matched case-insensitively per
+  RFC 7230 while the value is still compared exactly, per RFC 6455. A
+  remaining mismatch now dumps the truncated server response, so such a quirk
+  is visible in the trace rather than hiding behind a bare rejection.
+  ([7a287ba])
 
 ## [0.2.0] — 2026-08-15
 
@@ -229,3 +237,4 @@ screenshots as tools. ([3d11be9])
 [2818f87]: https://github.com/centlakestefan/tapto-vnc/commit/2818f87
 [6476df4]: https://github.com/centlakestefan/tapto-vnc/commit/6476df4
 [b0c06d7]: https://github.com/centlakestefan/tapto-vnc/commit/b0c06d7
+[7a287ba]: https://github.com/centlakestefan/tapto-vnc/commit/7a287ba
