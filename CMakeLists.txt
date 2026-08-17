@@ -39,11 +39,26 @@ add_custom_target(tapto_version ALL
 # OpenSSL: DES for VNC authentication, TLS for wss:// transport.
 # zlib:    ZRLE encoding.
 find_package(OpenSSL REQUIRED)
-find_package(ZLIB REQUIRED)
 
 # Fetched at configure time, pinned to the same tags tapto-code uses so the
 # two projects stay on one version of each dependency.
 include(FetchContent)
+
+# zlib: auto-downloaded via FetchContent (zlib ZRLE encoding)
+FetchContent_Declare(zlib
+  GIT_REPOSITORY https://github.com/madler/zlib.git
+  GIT_TAG v1.3.1
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(zlib)
+
+# Provide compatibility alias for existing ZLIB::ZLIB usage
+if(NOT TARGET ZLIB::ZLIB)
+  add_library(ZLIB::ZLIB INTERFACE IMPORTED)
+  set_target_properties(ZLIB::ZLIB PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${zlib_SOURCE_DIR}"
+    INTERFACE_LINK_LIBRARIES zlibstatic)
+endif()
 
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 FetchContent_Declare(nlohmann_json
