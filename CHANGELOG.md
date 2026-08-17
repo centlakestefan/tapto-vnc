@@ -96,6 +96,10 @@ carries everything else.
   on the result, which is the one picture it cannot be measured against: the
   target may not still be on screen. Drags mark the point they grab. Neither
   frame is ever shown to the model. ([ba61887])
+- The build no longer expects zlib to be installed — it is fetched at configure
+  time with the rest of the dependencies, pinned to `v1.3.1`, so a machine that
+  previously failed on a missing system zlib package now builds from the pinned
+  source without it. ([b0c06d7])
 
 Both zoom entries are changes to the tools the model sees, so prompts and
 measurements taken against the old schema do not carry over.
@@ -224,3 +228,4 @@ screenshots as tools. ([3d11be9])
 [e8debd0]: https://github.com/centlakestefan/tapto-vnc/commit/e8debd0
 [2818f87]: https://github.com/centlakestefan/tapto-vnc/commit/2818f87
 [6476df4]: https://github.com/centlakestefan/tapto-vnc/commit/6476df4
+[b0c06d7]: https://github.com/centlakestefan/tapto-vnc/commit/b0c06d7
