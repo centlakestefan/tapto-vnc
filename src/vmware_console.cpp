@@ -205,25 +205,52 @@ std::string findVmId(httplib::SSLClient& client,
     if (res && (res->status == 404 || res->status == 405)) {
         res = client.Get(("/rest/vcenter/vm" + query).c_str(), headers);
     }
+    bool needClientFilter = false;
+    if (res && res->status == 400) {
+        // Newer vCenter rejects filter.names property; fall back to unfiltered list
+        needClientFilter = true;
+    }
+    if (needClientFilter) {
+        // Fetch full list and filter client-side
+        res = client.Get("/api/vcenter/vm", headers);
+        if (res && (res->status == 404 || res->status == 405)) {
+            res = client.Get("/rest/vcenter/vm", headers);
+        }
+    }
     if (!res || res->status != 200) {
         fail("VM lookup", describe(res));
     }
 
     try {
         const auto json = nlohmann::json::parse(res->body);
-        // Same shape split as above: /api is a bare array.
         const auto& list = json.is_array() ? json : json["value"];
-        if (!list.is_array() || list.empty()) {
+        if (!list.is_array()) {
+            fail("VM lookup", "unexpected response format");
+        }
+
+        std::string foundVm;
+        size_t matches = 0;
+        for (const auto& item : list) {
+            if (!item.contains("vm")) continue;
+            std::string name;
+            if (item.contains("name")) {
+                name = item["name"].get<std::string>();
+            } else if (item.contains("vm_name")) {
+                name = item["vm_name"].get<std::string>();
+            }
+            if (name == vmName) {
+                foundVm = item["vm"].get<std::string>();
+                ++matches;
+            }
+        }
+        if (matches == 0) {
             fail("VM lookup", "no VM named '" + vmName + "'");
         }
-        if (list.size() > 1) {
+        if (matches > 1) {
             fail("VM lookup", "name '" + vmName + "' matched " +
-                                  std::to_string(list.size()) + " VMs; use an exact name");
+                                  std::to_string(matches) + " VMs; use an exact name");
         }
-        if (!list[0].contains("vm")) {
-            fail("VM lookup", "response has no 'vm' field");
-        }
-        return list[0]["vm"].get<std::string>();
+        return foundVm;
     } catch (const nlohmann::json::exception& e) {
         fail("VM lookup", std::string("bad JSON: ") + e.what());
     }
