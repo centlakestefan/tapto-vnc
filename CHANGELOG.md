@@ -23,7 +23,7 @@ Versions are [Semantic Versioning](https://semver.org/) against that surface.
 Before 1.0.0 the minor number carries breaking changes, and the patch number
 carries everything else.
 
-## [Unreleased]
+## [0.3.0] — 2026-08-17
 
 ### Added
 
@@ -129,6 +129,11 @@ measurements taken against the old schema do not carry over.
   what it found and connects at the guest's current size. The first refusal
   reads `guest.toolsStatus`, so `toolsNotInstalled` stops immediately rather
   than waiting for something that will never arrive. ([75842dd])
+- A newer vCenter that refuses the `filter.names` property (HTTP 400) no longer
+  ends the run before it connects: the lookup falls back to the unfiltered VM
+  list and matches the name client-side, accepting a response that spells the
+  name `name` or `vm_name`, and still fails on no or multiple matches.
+  ([6476df4])
 
 ## [0.2.0] — 2026-08-15
 
@@ -183,7 +188,8 @@ screenshots as tools. ([3d11be9])
 - `NOMINMAX` for Windows builds, where `<windows.h>` breaks `std::min` and
   `std::max` in the vendored RFB sources under MSVC. ([f069d78])
 
-[Unreleased]: https://github.com/centlakestefan/tapto-vnc/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/centlakestefan/tapto-vnc/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/centlakestefan/tapto-vnc/releases/tag/v0.1.0
 [3d11be9]: https://github.com/centlakestefan/tapto-vnc/commit/3d11be9
@@ -217,3 +223,4 @@ screenshots as tools. ([3d11be9])
 [30e48eb]: https://github.com/centlakestefan/tapto-vnc/commit/30e48eb
 [e8debd0]: https://github.com/centlakestefan/tapto-vnc/commit/e8debd0
 [2818f87]: https://github.com/centlakestefan/tapto-vnc/commit/2818f87
+[6476df4]: https://github.com/centlakestefan/tapto-vnc/commit/6476df4
