@@ -27,11 +27,12 @@ namespace {
 }
 
 std::vector<U8> serialize(const ProtocolVersion& msg) {
-    std::vector<U8> buffer(ProtocolVersion::SIZE);
+    std::vector<U8> buffer(ProtocolVersion::SIZE + 1); // +1 for snprintf's null terminator
     std::snprintf(reinterpret_cast<char*>(buffer.data()), 
-                  ProtocolVersion::SIZE + 1,
+                  buffer.size(),
                   ProtocolVersion::FORMAT,
                   msg.major, msg.minor);
+    buffer.resize(ProtocolVersion::SIZE); // RFB protocol version is exactly 12 bytes, no null
     return buffer;
 }
 
