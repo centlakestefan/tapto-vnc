@@ -1,6 +1,7 @@
 #include "rfb_websocket.hpp"
 #include "rfb_platform_impl.hpp"
 #include <cerrno>
+#include <cctype>
 #include <cstring>
 #include <random>
 #include <sstream>
@@ -33,6 +34,43 @@ static std::string base64_encode(const U8* data, size_t size) {
     BIO_free_all(bio);
     
     return result;
+}
+
+// Case-insensitive search for an HTTP header line in a raw message (the header
+// name is matched ignoring case per RFC 7230), then checks that the trimmed
+// header value equals `expected_value` exactly (values are case-sensitive).
+// Returns true if the header is present with a matching value.
+static bool responseHasHeader(const std::string& message, const std::string name_lower, const std::string& expected_value) {
+    std::string message_lower;
+    message_lower.resize(message.size());
+    for (size_t i = 0; i < message.size(); ++i) {
+        message_lower[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(message[i])));
+    }
+
+    size_t pos = 0;
+    while ((pos = message_lower.find(name_lower, pos)) != std::string::npos) {
+        size_t value_start = pos + name_lower.size(); // position just past ':'
+        while (value_start < message.size() &&
+               (message[value_start] == ' ' || message[value_start] == '\t')) {
+            value_start++;
+        }
+        size_t value_end = value_start;
+        while (value_end < message.size() &&
+               message[value_end] != '\r' && message[value_end] != '\n') {
+            value_end++;
+        }
+        // Trim trailing whitespace/CR from the value.
+        while (value_end > value_start &&
+               (message[value_end - 1] == ' ' || message[value_end - 1] == '\t' ||
+                message[value_end - 1] == '\r')) {
+            value_end--;
+        }
+        if (message.compare(value_start, value_end - value_start, expected_value) == 0) {
+            return true;
+        }
+        pos = value_start; // continue searching past this occurrence
+    }
+    return false;
 }
 
 WebSocketTransport::WebSocketTransport()
@@ -821,12 +859,23 @@ void WebSocketTransport::performClientHandshake() {
         throw WebSocketException("Server did not accept WebSocket upgrade");
     }
     
-    // Verify Sec-WebSocket-Accept
+    // Verify Sec-WebSocket-Accept.
+    // Note: match the header NAME case-insensitively and trim whitespace around
+    // the value -- some servers (e.g. the websockify-based WebMKS frontend on
+    // VCSA 8.0) spell the header "Sec-Websocket-Accept" (lowercase 's'), which
+    // broke the old case-sensitive substring match even though the handshake
+    // value itself was correct. The VALUE must still match exactly per RFC 6455.
     std::string expected_accept = computeWebsocketAccept(ws_key);
-    std::string accept_header = "Sec-WebSocket-Accept: " + expected_accept;
-    
-    if (response.find(accept_header) == std::string::npos) {
-        throw WebSocketException("Invalid Sec-WebSocket-Accept header");
+    if (!responseHasHeader(response, "sec-websocket-accept:", expected_accept)) {
+        // Include a truncated raw response to make server-side quirks visible.
+        std::string dump = response.substr(0, 512);
+        // Replace control chars so the log stays readable.
+        for (char& c : dump) {
+            if (static_cast<unsigned char>(c) < 0x20) c = '.';
+        }
+        throw WebSocketException(
+            "Invalid Sec-WebSocket-Accept header (expected: " + expected_accept +
+            "; server response: " + dump + ")");
     }
 }
 
