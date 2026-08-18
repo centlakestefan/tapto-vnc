@@ -25,17 +25,12 @@ jobs:
           # the smoke test below asserts the stamp instead.
           fetch-depth: 0
 
-      # OpenSSL for the HTTPS provider APIs and for DES in VNC authentication;
-      # zlib for the ZRLE encoding.
-      - name: Install OpenSSL and zlib (Linux)
+      # OpenSSL for the HTTPS provider APIs and for DES in VNC authentication.
+      # zlib is not installed on purpose: it is fetched at configure time, and
+      # a runner without it is the case that path exists for.
+      - name: Install OpenSSL (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
-
-      # The windows-latest runner ships OpenSSL but not a CMake-findable zlib,
-      # so that one comes from the vcpkg the image already has.
-      - name: Install zlib (Windows)
-        if: runner.os == 'Windows'
-        run: vcpkg install zlib:x64-windows
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
 
       - name: Configure (Linux)
         if: runner.os == 'Linux'
@@ -46,7 +41,6 @@ jobs:
         run: >
           cmake -S . -B build
           -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
-          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build
         run: cmake --build build --config Release

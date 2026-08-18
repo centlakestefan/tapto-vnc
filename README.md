@@ -31,8 +31,8 @@ tapto-vnc --host 192.0.2.10 "Open the settings app and turn on dark mode"
   needs no VNC server of its own.
 - **Remote keyboard layouts** — text is translated to the guest's layout, since
   RFB carries key positions rather than characters.
-- **Self-contained** — one C++17 binary; nlohmann/json and cpp-httplib are
-  fetched at build time.
+- **Self-contained** — one C++17 binary; nlohmann/json, cpp-httplib and zlib
+  are fetched at build time.
 
 ## Build
 
@@ -55,11 +55,11 @@ network on the first configure):
 
 - [nlohmann/json](https://github.com/nlohmann/json) `v3.11.3`
 - [cpp-httplib](https://github.com/yhirose/cpp-httplib) `v0.15.3`
+- [zlib](https://github.com/madler/zlib) `v1.3.1` — the ZRLE encoding
 
-**OpenSSL and zlib are required** — OpenSSL for the HTTPS provider APIs and for
-DES in VNC authentication, zlib for the ZRLE encoding. Both must be installed
-and findable by CMake. On Linux, install your distro's `libssl-dev` /
-`zlib1g-dev`. On Windows, if OpenSSL isn't auto-detected:
+**OpenSSL is the one system dependency** — for the HTTPS provider APIs and for
+DES in VNC authentication. It must be installed and findable by CMake. On Linux,
+install your distro's `libssl-dev`. On Windows, if OpenSSL isn't auto-detected:
 
 ```sh
 cmake -S . -B build -DOPENSSL_ROOT_DIR=C:/path/to/openssl
