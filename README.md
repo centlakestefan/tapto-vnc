@@ -77,6 +77,49 @@ tapto-vnc --host 192.0.2.10 --password secret "Open Notepad and type hello"
 With no task on the command line it starts an interactive prompt; `/exit` or
 Ctrl-D quits.
 
+A task that takes several steps is better given a step at a time — the model
+then works from the screen the previous step produced, rather than planning the
+whole thing from the first screenshot. Put the steps in a file, separated by a
+line of `===`, and hand it over with `-f`:
+
+```sh
+tapto-vnc --host 192.0.2.10 -f install.txt
+```
+
+```
+Open the Downloads folder and run setup.exe.
+===
+Accept the licence and take the default install location.
+===
+When it finishes, open the app and tell me the version it reports.
+===
+/exit
+```
+
+Each block is sent once the one before it has finished, exactly as if it had
+been typed at the prompt, and the prompt is yours again at the end. A block of
+just `/exit` (or `/quit`) ends the run there instead — that is what makes a
+file a whole run rather than an opening, so it can be started unattended.
+
+A failed turn stops the rest, since the steps after it were written against a
+screen that never happened. Such a run exits 1 when the file ended in `/exit`,
+so whatever started it can tell; without one it hands you the prompt, where the
+state it stopped in is still there to look at.
+
+The model gets the same escape hatch. Running from a file, it is told that
+nobody is reading its replies and that a step it cannot do should be answered
+with `BLOCKED:` and the reason as the first line — a missing folder, a
+credential it was not given, a screen that is not what the step assumed. That
+stops the remaining prompts exactly as a failed turn does, prints the reason,
+and leaves the screen as it was. Without it the model reports being stuck in
+prose and the next step is sent anyway, against a machine nobody is watching.
+
+Only the first line counts, so a reply that merely mentions the word carries
+on, and the instruction is added to the system prompt only for `-f` runs — at
+an interactive prompt you are the escape hatch. It is a request, not a
+guarantee: a model can still narrate failure and carry on, which is one more
+reason to keep `--screenshots`.
+
 Add `--screenshots shots/` to keep every frame it saw, each click marked with a
 red dot. That is the only reliable record of what a run actually did — models
 report success they did not achieve.
@@ -236,6 +279,7 @@ The store is shared with `tapto-code`, which can write it for you:
 | --- | --- |
 | `--screenshots <dir>` | save every frame — a click writes the screen it aimed at with a red dot, then the screen it produced — plus `frames.jsonl` describing them |
 | `--trace <path>` | request/response diagnostics, including cache usage |
+| `-f <file>` | send the file's prompts as consecutive turns, separated by a line of `===`; a final `/exit` block ends the run |
 | `--require-zoom on` | refuse a click unless a zoom containing it came first — for weaker models |
 | `--move-first on` | ask the model to hover a point and see what reacts before clicking it — advice, not a gate |
 | `--grid 50` | rule and grid the full screenshots too, every 50 px — an experiment, off by default |

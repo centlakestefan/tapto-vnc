@@ -6,9 +6,12 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -273,6 +276,39 @@ When the task you were given is complete, say so and stop. Do not start it over.
 
 Tell the user what you observe and what you are doing, in plain language. When a task is done, say what the final state of the screen is.)";
 
+// Spliced in only when the steps come from a prompt file, which is the third
+// reason this prompt is in pieces.
+//
+// It is the one setup where nobody reads the reply before the next instruction
+// is sent: the model finishes a step, the program sends the next one, and a
+// model that has quietly given up carries on being asked for the steps that
+// depended on the one it did not do. A step that cannot be done needs a way to
+// say so that the program can act on, and the reply is the only channel every
+// provider has.
+//
+// A word at the start of the reply rather than a tool, deliberately. A tool
+// would have to end the turn in three separate tool loops, and adding one
+// changes the schema every earlier run was measured against — for an escape
+// hatch that is used when everything else has already gone wrong. This costs
+// nothing when it is not used, and it is not offered at all to an interactive
+// session, where the person reading the reply is the escape hatch.
+//
+// The instruction is worded against the two ways it fails in practice: a model
+// that reports being stuck in prose and expects someone to notice, and a model
+// that says the word because a step went differently, not because it is stuck.
+const char* kBlockedGuidance = R"(
+The steps of this task were written in advance and are sent to you one at a time: as soon as you finish this one, the next is sent automatically. Nobody is reading your replies while that happens, and each step assumes the screen the step before it was supposed to produce.
+
+So if you cannot do what this step asks — you cannot find what it names, it needs a credential you were not given, the screen is not what it assumes, or doing it would be irreversible and was not clearly asked for — do not improvise something close to it and do not carry on. Carrying on runs the remaining steps against a screen nobody expected, on a machine nobody is watching.
+
+Say so in a form the program can act on: make BLOCKED: the first thing in your reply, followed on that same line by what stopped you. For example:
+
+BLOCKED: there is no Downloads folder in this file manager and no setup.exe on the desktop
+
+That stops the remaining steps and hands the session back to a person, with the screen exactly as you left it, so write the line for whoever picks it up: what you were trying to do, and what you found instead.
+
+Use it only when you are actually stuck. Finishing the step is what is wanted, and a step that went differently from how it was described but reached what it asked for is finished, not blocked — report that in the ordinary way.)";
+
 // "tapto-vnc 0.2.0 (v0.1.0-9-gcef058c)" — the release, then the exact commit.
 //
 // The commit is the part that earns its place. A run's lasting artifact is its
@@ -324,6 +360,19 @@ void usage(const char* argv0) {
         << "                      least thinking it allows.\n"
         << "  --max-steps <n>     Tool-call limit per reply (default: 60)\n"
         << "  --trace <path>      Append request/response diagnostics here\n"
+        << "  -f, --file <path>   Send the prompts in <path> as consecutive turns,\n"
+        << "                      separated by a line of three or more '='. For a\n"
+        << "                      task that takes several steps: each block is sent\n"
+        << "                      once the one before it has finished, so the model\n"
+        << "                      works from the screen that step produced instead\n"
+        << "                      of planning the lot up front. A failed turn stops\n"
+        << "                      the rest, and exits 1 if the file ends in /exit.\n"
+        << "                      A block of just /exit ends the run there instead\n"
+        << "                      of returning to the interactive prompt. The model\n"
+        << "                      is told to open its reply with BLOCKED: and a\n"
+        << "                      reason when a step cannot be done, which stops the\n"
+        << "                      file the same way — nobody is reading the replies\n"
+        << "                      while it runs.\n"
         << "  --quiet             Don't print the model's intermediate reasoning\n"
         << "  --screenshots <dir> Save every screenshot the agent takes into <dir>\n"
         << "                      (config key screenshot-dir)\n"
@@ -388,8 +437,10 @@ void usage(const char* argv0) {
         << "default. The API key comes from $ANTHROPIC_API_KEY or the store's\n"
         << "api-key; model, effort, provider-url, max-output-tokens,\n"
         << "max-tool-iterations, print-cot and trace-file are read from it too.\n\n"
-        << "Any remaining arguments are sent as the first task. With none,\n"
-        << "tapto-vnc starts an interactive prompt. Type /exit to quit.\n";
+        << "Any remaining arguments are sent as the first task, ahead of any -f\n"
+        << "file. With neither, tapto-vnc starts at an interactive prompt; it returns\n"
+        << "to one after a task or a file, so a run can be followed up by hand.\n"
+        << "Type /exit to quit.\n";
 }
 
 const char* option(int argc, char** argv, int& i, const char* flag) {
@@ -415,6 +466,124 @@ bool parseResolution(const std::string& text, int& width, int& height) {
         return false;
     }
     return width >= 640 && width <= 7680 && height >= 480 && height <= 4320;
+}
+
+// Whether a reply is the model reporting itself stuck rather than done, and
+// what it said stopped it.
+//
+// Only the first line is examined and the word has to open it. A reply that
+// merely contains the token is not a surrender: models quote the instruction
+// that told them about it, describe a dialog that says "blocked", and explain
+// what they would have said had they been stuck. Abandoning the rest of a file
+// on any of those is worse than not having the escape hatch at all.
+//
+// Leading markdown comes off first, because a model emphasises the opening
+// word of a reply without being asked to and "**BLOCKED:**" is the same
+// statement. What follows the word must be a separator or nothing, so
+// "blocked the print queue and carried on" is prose, not a verdict.
+bool blockedReply(const std::string& reply, std::string& reason) {
+    static const std::string kToken = "blocked";
+    static const char* kNoise = " \t\r*_#>`\"'";
+    reason.clear();
+
+    const size_t start = reply.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return false;
+    const size_t newline = reply.find('\n', start);
+    std::string line = reply.substr(
+        start, newline == std::string::npos ? std::string::npos : newline - start);
+
+    const size_t opening = line.find_first_not_of(kNoise);
+    if (opening == std::string::npos) return false;
+    line.erase(0, opening);
+    if (line.size() < kToken.size()) return false;
+    for (size_t i = 0; i < kToken.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(line[i])) != kToken[i]) return false;
+    }
+
+    std::string rest = line.substr(kToken.size());
+    const size_t after = rest.find_first_not_of(kNoise);
+    if (after == std::string::npos) return true;   // The word on its own line.
+    // ":" is what the prompt asks for; a dash, including the em dash a model
+    // reaches for unprompted, says the same thing.
+    static const std::string kEmDash = "\xE2\x80\x94";
+    size_t skip = 0;
+    if (rest[after] == ':' || rest[after] == '-') skip = 1;
+    else if (rest.compare(after, kEmDash.size(), kEmDash) == 0) skip = kEmDash.size();
+    else return false;
+
+    rest.erase(0, after + skip);
+    const size_t begin = rest.find_first_not_of(kNoise);
+    if (begin == std::string::npos) return true;   // Blocked, but it did not say why.
+    reason = rest.substr(begin, rest.find_last_not_of(kNoise) - begin + 1);
+    return true;
+}
+
+// The two words that end a session. Recognised in a prompt file as well as at
+// the prompt, so a file can say "and then stop" instead of leaving a run that
+// nobody is watching parked at a prompt.
+bool isExitCommand(const std::string& text) {
+    return text == "/exit" || text == "/quit";
+}
+
+// The turns held in a prompt file, in the order they will be sent.
+//
+// A task on a desktop is rarely one instruction: install this, then configure
+// it, then check what it did. Handing the whole plan over in one message makes
+// the model commit to all of it from the first screenshot, so the steps are
+// better typed one at a time — which is what this reads from a file instead,
+// so a sequence that worked can be repeated exactly rather than from memory.
+//
+// The separator is a line of three or more '=' and nothing else: visible in
+// any editor, and not something prose walks into by accident. Everything
+// between two separators is one turn, trimmed of surrounding whitespace, and
+// empty blocks are dropped so a file that opens or closes with a separator
+// still says what it looks like it says.
+std::vector<std::string> readPromptFile(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        std::cerr << "ERROR: cannot read prompt file '" << path << "'\n";
+        std::exit(2);
+    }
+    std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    // Notepad and PowerShell's Set-Content both write a UTF-8 byte-order mark.
+    // It is invisible here and a stray character in the first turn the model
+    // is given, so it goes before anything is split.
+    if (text.rfind("\xEF\xBB\xBF", 0) == 0) text.erase(0, 3);
+
+    auto trim = [](const std::string& text) {
+        const size_t first = text.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) return std::string();
+        return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+    };
+    auto isSeparator = [&trim](const std::string& line) {
+        const std::string bare = trim(line);
+        if (bare.size() < 3) return false;
+        return bare.find_first_not_of('=') == std::string::npos;
+    };
+
+    std::vector<std::string> prompts;
+    std::string block;
+    auto endBlock = [&]() {
+        const std::string prompt = trim(block);
+        if (!prompt.empty()) prompts.push_back(prompt);
+        block.clear();
+    };
+
+    std::istringstream lines(text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (isSeparator(line)) { endBlock(); continue; }
+        block += line;   // A trailing \r from CRLF input is trimmed with the rest.
+        block += '\n';
+    }
+    endBlock();
+
+    if (prompts.empty()) {
+        std::cerr << "ERROR: prompt file '" << path << "' contains no prompts\n";
+        std::exit(2);
+    }
+    return prompts;
 }
 
 std::string fromEnv(const char* name) {
@@ -464,7 +633,7 @@ int main(int argc, char** argv) {
     // Left empty so config can supply them; CLI flags win when present.
     std::string vmName, model, effort, trace, task, provider, layout, typeTest, altcode, color,
                 screenshotDir, providerUrl, resolution, thinking, requireZoom, moveFirst, grid,
-                wake;
+                wake, promptFile;
     int maxSteps = 0;
     int resolutionWidth = 0, resolutionHeight = 0;
     bool quiet = false;
@@ -508,6 +677,8 @@ int main(int argc, char** argv) {
         if (const char* v = option(argc, argv, i, "--grid"))      { grid = v; continue; }
         if (const char* v = option(argc, argv, i, "--max-steps")) { maxSteps = std::atoi(v); continue; }
         if (const char* v = option(argc, argv, i, "--trace"))     { trace = v; continue; }
+        if (const char* v = option(argc, argv, i, "-f"))          { promptFile = v; continue; }
+        if (const char* v = option(argc, argv, i, "--file"))      { promptFile = v; continue; }
         if (!arg.empty() && arg[0] == '-') {
             std::cerr << "ERROR: unknown argument '" << arg << "'\n\n";
             usage(argv[0]);
@@ -517,6 +688,12 @@ int main(int argc, char** argv) {
         if (!task.empty()) task += " ";
         task += arg;
     }
+
+    // Read before a single connection is made: a mistyped path should cost
+    // nothing, and a VMware console ticket taken here would already be
+    // expiring by the time the mistake surfaced.
+    const std::vector<std::string> filePrompts =
+        promptFile.empty() ? std::vector<std::string>() : readPromptFile(promptFile);
 
     // Resolution order for every setting: CLI flag, then environment, then the
     // config store, then a built-in default.
@@ -980,10 +1157,19 @@ int main(int argc, char** argv) {
         systemPrompt += kSystemPromptZoom;
         if (moveFirst == "on") systemPrompt += kMoveGuidance;
         systemPrompt += kSystemPromptRest;
+        // Only for a prompt file. In an interactive session the person reading
+        // the reply is the escape hatch, and a rule about a magic word nothing
+        // acts on would be noise in the prompt.
+        if (!filePrompts.empty()) systemPrompt += kBlockedGuidance;
         client->setSystemPrompt(systemPrompt);
         client->start();
 
-        auto runTurn = [&](const std::string& message) {
+        // Returns false when the turn failed, which only a scripted sequence
+        // acts on: at the interactive prompt the person can see what happened
+        // and decide, but the prompts in a file are steps of one task and
+        // step three is meaningless if step two never ran.
+        struct Turn { bool ok; std::string reply; };
+        auto runTurn = [&](const std::string& message) -> Turn {
             try {
                 // Both ends of a turn go into the frame index: what it was
                 // asked, and what it said when it finished. The frames in
@@ -993,14 +1179,65 @@ int main(int argc, char** argv) {
                 const std::string reply = client->chat(context, message);
                 tapto::frames::record("reply", reply);
                 tapto::ui::print_reply(reply);
+                return {true, reply};
             } catch (const std::exception& e) {
                 tapto::ui::end_status();
                 tapto::ui::print_error(e.what());
+                return {false, {}};
             }
         };
 
         if (!task.empty()) {
             runTurn(task);
+        }
+
+        // The prompts from -f, one turn each. Echoed in the shape the
+        // interactive prompt uses, so the transcript of a scripted run reads
+        // like a typed one and shows which step a reply belongs to.
+        //
+        // `quit` is what a closing /exit block sets: the file was a whole run
+        // rather than an opening, so there is nobody to hand the prompt back
+        // to. `failed` is remembered because such a run is usually started by
+        // something that reads an exit status.
+        bool quit = false, failed = false;
+        for (size_t i = 0; i < filePrompts.size(); ++i) {
+            if (isExitCommand(filePrompts[i])) {
+                quit = true;
+                const size_t skipped = filePrompts.size() - i - 1;
+                if (skipped > 0) {
+                    tapto::ui::print_warning(std::to_string(skipped) + " prompt(s) after " +
+                                             filePrompts[i] + " in " + promptFile +
+                                             " were not sent");
+                }
+                break;
+            }
+            std::cout << "\n> " << filePrompts[i] << "\n";
+            const Turn turn = runTurn(filePrompts[i]);
+            // A step the model could not do ends the file for the same reason
+            // a failed one does: what follows was written for the screen this
+            // step was supposed to leave behind.
+            std::string reason;
+            const bool blocked = turn.ok && blockedReply(turn.reply, reason);
+            if (turn.ok && !blocked) continue;
+            failed = true;
+            if (blocked) {
+                tapto::ui::print_error(reason.empty()
+                                           ? "Stopped: the model reported itself blocked"
+                                           : "Stopped: the model reported itself blocked — " + reason);
+            }
+            const size_t unsent = filePrompts.size() - i - 1;
+            if (unsent > 0) {
+                tapto::ui::print_error((blocked ? std::string() : std::string("Stopped after a failed turn; ")) +
+                                       std::to_string(unsent) + " prompt(s) from " +
+                                       promptFile + " were not sent");
+            }
+            // The /exit that is now never reached still says what the file
+            // wanted: a failure must not leave an unattended run sitting at a
+            // prompt until someone notices.
+            for (size_t j = i + 1; j < filePrompts.size(); ++j) {
+                if (isExitCommand(filePrompts[j])) quit = true;
+            }
+            break;
         }
 
         // A line carrying no actual request. Checked instead of line.empty()
@@ -1019,7 +1256,7 @@ int main(int argc, char** argv) {
         // Interactive loop. Kept even after a one-shot task so the user can
         // follow up on what the model just did without reconnecting.
         std::string line;
-        while (true) {
+        while (!quit) {
             if (!session.isConnected()) {
                 // Sitting at this prompt is the longest silence in a run —
                 // nothing pumps the socket while getline blocks — so it is the
@@ -1040,13 +1277,16 @@ int main(int argc, char** argv) {
             }
             std::cout << "\n> " << std::flush;
             if (!std::getline(std::cin, line)) break;   // Ctrl-D
-            if (line == "/exit" || line == "/quit") break;
+            if (isExitCommand(line)) break;
             if (blank(line)) continue;
             runTurn(line);
         }
 
         session.disconnect();
-        return 0;
+        // Non-zero only for a prompt file that ran to a stop of its own: after
+        // an interactive session the last thing that happened was the person's
+        // doing, and a failed turn earlier says nothing about it.
+        return (quit && failed) ? 1 : 0;
 
     } catch (const std::exception& e) {
         std::cerr << "ERROR: " << e.what() << "\n";
