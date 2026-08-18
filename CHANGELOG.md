@@ -27,6 +27,22 @@ carries everything else.
 
 ### Added
 
+- `-f <file>` (`--file`) sends the prompts in a file as consecutive turns,
+  separated by a line of three or more `=`. A multi-step task works better one
+  step at a time, since each one is written against the screen the last one
+  produced; this repeats such a sequence exactly instead of retyping it. The
+  file is read before anything connects, and the interactive prompt follows as
+  usual — unless a block says `/exit`, which ends the run there, so a file can
+  be a whole unattended run rather than an opening. A failed turn stops the
+  rest; a run that stopped and was told to exit reports it as exit status 1.
+  ([ab78ca4])
+- A model running from a prompt file can say it is stuck: told that nobody is
+  reading its replies, it answers a step it cannot do with `BLOCKED:` and a
+  reason on the first line, which stops the remaining prompts and prints the
+  reason. Only the opening line counts, so quoting the word is not a surrender,
+  and the instruction is added to the system prompt only for `-f` runs — the
+  tools the model sees are unchanged, in interactive runs as in scripted ones.
+  ([ab78ca4])
 - `--grid <px>` (config key `screenshot-grid`, `0` by default) rules and grids
   the full screenshots in screen coordinates, the way `vnc_zoom` already does.
   An open experiment: at 1:1 the labels are least legible exactly where the
@@ -238,3 +254,4 @@ screenshots as tools. ([3d11be9])
 [6476df4]: https://github.com/centlakestefan/tapto-vnc/commit/6476df4
 [b0c06d7]: https://github.com/centlakestefan/tapto-vnc/commit/b0c06d7
 [7a287ba]: https://github.com/centlakestefan/tapto-vnc/commit/7a287ba
+[ab78ca4]: https://github.com/centlakestefan/tapto-vnc/commit/ab78ca4
