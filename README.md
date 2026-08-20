@@ -171,6 +171,7 @@ keep-recent-images = 2
 | `<name>-api-key` | — | or the vendor's environment variable; may be an `env:` / `cmd:` / `wincred:` reference |
 | `<name>-provider-url` | per dialect | point at a local OpenAI-compatible server |
 | `<name>-model` | per dialect | |
+| `<name>-reasoning-effort` | unset | sent as `reasoning_effort` by the **openai** dialect only (e.g. `low`, `medium`, `high`); `--effort` is Claude's equivalent |
 | `keyboard-layout` | `us` | layout of the **remote** machine |
 | `keep-recent-images` | `3` | screenshots kept in the conversation |
 | `max-output-tokens` | `16000` | |

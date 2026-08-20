@@ -164,6 +164,14 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
         {"messages", messages}
     };
 
+    // Reasoning-effort hint for the reasoning models (gpt-5, o-series) and for
+    // OpenAI-compatible servers that accept the same field. Sent only when
+    // configured, and verbatim: which values an endpoint takes is the
+    // endpoint's business, and a rejected one comes back as its own API error.
+    if (!m_config->openaiReasoningEffort().empty()) {
+        request_body["reasoning_effort"] = m_config->openaiReasoningEffort();
+    }
+
     // Add tools if provided
     if (!tools.empty()) {
         request_body["tools"] = tools;

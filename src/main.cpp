@@ -436,7 +436,9 @@ void usage(const char* argv0) {
         << "tapto config store (~/.tapto/config, same one tapto-code uses), then a\n"
         << "default. The API key comes from $ANTHROPIC_API_KEY or the store's\n"
         << "api-key; model, effort, provider-url, max-output-tokens,\n"
-        << "max-tool-iterations, print-cot and trace-file are read from it too.\n\n"
+        << "max-tool-iterations, print-cot and trace-file are read from it too.\n"
+        << "<name>-reasoning-effort is the openai dialect's own effort knob, sent\n"
+        << "as reasoning_effort (e.g. low, medium, high); --effort is Claude's.\n\n"
         << "Any remaining arguments are sent as the first task, ahead of any -f\n"
         << "file. With neither, tapto-vnc starts at an interactive prompt; it returns\n"
         << "to one after a task or a file, so a run can be followed up by hand.\n"
@@ -875,6 +877,23 @@ int main(int argc, char** argv) {
     if (model.empty() && provider == defaultProvider) model = settings.valueOr("model", "");
     if (model.empty())    model    = defaults.model;
     if (effort.empty())   effort   = settings.valueOr("effort", "high");
+
+    // The openai dialect's own effort knob, sent as `reasoning_effort` — for
+    // gpt-5, the o-series, and the OpenAI-compatible servers that copy the
+    // field. Scoped to the provider block like the model and the URL, and for
+    // the same reason: effort belongs to an endpoint and its model, not to the
+    // session, so a hosted gpt-5 block and a local one have no reason to agree.
+    // Unset sends nothing and leaves the server's own default in place.
+    std::string reasoningEffort = settings.valueOr(provider + "-reasoning-effort", "");
+    if (reasoningEffort.empty() && provider == defaultProvider) {
+        reasoningEffort = settings.valueOr("reasoning-effort", "");
+    }
+    if (!reasoningEffort.empty() && dialect != "openai") {
+        // Dropping it silently would look exactly like it working.
+        tapto::ui::print_warning("'" + provider + "-reasoning-effort' is ignored: "
+                                 "only the openai dialect sends it");
+        reasoningEffort.clear();
+    }
     if (trace.empty())    trace    = settings.valueOr("trace-file", "");
     if (maxSteps <= 0)    maxSteps = settings.intOr("max-tool-iterations", 60);
     const int maxOutputTokens = settings.intOr("max-output-tokens", 16000);
@@ -1078,6 +1097,7 @@ int main(int argc, char** argv) {
         config.setMaxOutputTokens(maxOutputTokens);
         config.setPrintCot(!quiet);
         config.setEffort(effort);
+        config.setOpenaiReasoningEffort(reasoningEffort);
         config.setKeepRecentImages(settings.intOr("keep-recent-images", 3));
 
         Context context;

@@ -14,6 +14,7 @@ public:
     int openaiReadTimeoutSeconds() const { return m_readTimeoutSeconds; }
     bool printCot() const { return m_printCot; }
     const std::string& effort() const { return m_effort; }
+    const std::string& openaiReasoningEffort() const { return m_reasoningEffort; }
     int keepRecentImages() const { return m_keepRecentImages; }
 
     void setMaxOutputTokens(int v) { m_maxOutputTokens = v; }
@@ -22,6 +23,7 @@ public:
     void setOpenaiReadTimeoutSeconds(int v) { m_readTimeoutSeconds = v; }
     void setPrintCot(bool v) { m_printCot = v; }
     void setEffort(const std::string& v) { m_effort = v; }
+    void setOpenaiReasoningEffort(const std::string& v) { m_reasoningEffort = v; }
     void setKeepRecentImages(int v) { m_keepRecentImages = v; }
 
 private:
@@ -35,6 +37,13 @@ private:
     // (high). Driving a GUI is a long-horizon agentic task, which is exactly
     // where the higher settings earn their cost.
     std::string m_effort = "high";
+
+    // The openai dialect's equivalent, sent as `reasoning_effort`. Empty means
+    // the key is absent from the request, which is not the same as sending a
+    // default: the server picks its own, and servers that have never heard of
+    // the field keep working. No default is assumed here because, unlike
+    // Claude's effort, the accepted values differ from one endpoint to the next.
+    std::string m_reasoningEffort;
 
     // How many of the newest screenshots stay in the conversation as real
     // images. Full-screen PNGs are hundreds of kilobytes once base64-encoded

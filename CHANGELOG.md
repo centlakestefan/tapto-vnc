@@ -23,6 +23,16 @@ Versions are [Semantic Versioning](https://semver.org/) against that surface.
 Before 1.0.0 the minor number carries breaking changes, and the patch number
 carries everything else.
 
+## [Unreleased]
+
+### Added
+
+- `<name>-reasoning-effort` config key: the openai dialect sends it as
+  `reasoning_effort` on every request, for gpt-5/o-series and for
+  OpenAI-compatible servers that copy the field. Claude's `--effort` is
+  unchanged; the two are separate because the dialects spell it differently and
+  accept different values. Same key, same resolution order, as tapto-code.
+
 ## [0.3.0] — 2026-08-17
 
 ### Added
