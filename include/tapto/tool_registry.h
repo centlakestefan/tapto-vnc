@@ -47,8 +47,10 @@ struct ToolSpec {
     std::string claude_builtin_type;
 };
 
-// Wire formats for tool/function declarations across providers.
-enum class ToolFormat { Claude, OpenAI, Gemini, Generic };
+// Wire formats for tool/function declarations across providers, plus MCP —
+// which is not a provider but is one more spelling of the same three fields,
+// and belongs with them rather than in the server that happens to speak it.
+enum class ToolFormat { Claude, OpenAI, Gemini, Generic, Mcp };
 
 // Render a ToolSpec into the JSON shape a given provider expects. (The OpenAI
 // caller wraps this in {"type":"function","function":{...}} itself.)
@@ -78,6 +80,16 @@ inline nlohmann::json tool_definition_to_json(const ToolSpec& spec, ToolFormat f
                 {"name", spec.name},
                 {"description", spec.description},
                 {"parameters", spec.parameters},
+            };
+        // Same three fields as Claude, one letter apart: MCP spells the schema
+        // key inputSchema, not input_schema. A tool list built with the wrong
+        // one is accepted and then called with no arguments at all, so the
+        // difference is worth a case of its own.
+        case ToolFormat::Mcp:
+            return json{
+                {"name", spec.name},
+                {"description", spec.description},
+                {"inputSchema", spec.parameters},
             };
     }
     return json::object();

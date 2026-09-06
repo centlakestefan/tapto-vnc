@@ -27,6 +27,13 @@ carries everything else.
 
 ### Added
 
+- `--mcp` serves the nine screen-control tools to another model over MCP
+  (Streamable HTTP, `POST http://127.0.0.1:8722/mcp`, `--mcp-port` to move it)
+  instead of driving them. No API key or provider is needed, since nothing calls
+  a model. The server is unauthenticated and bound to loopback; it validates the
+  `Origin` header, so a web page cannot reach it by DNS rebinding, and it
+  refuses to start on a port already in use rather than sharing it with a second
+  instance attached to a different machine.
 - `<name>-reasoning-effort` config key: the openai dialect sends it as
   `reasoning_effort` on every request, for gpt-5/o-series and for
   OpenAI-compatible servers that copy the field. Claude's `--effort` is

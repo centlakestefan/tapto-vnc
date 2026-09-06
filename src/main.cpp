@@ -34,6 +34,7 @@
 #include "tapto/paths.h"
 #include "tapto/secret.h"
 #include "tapto/ui.h"
+#include "tapto/mcp_server.h"
 #include "tapto/version.h"
 #include "tapto/vmware_console.h"
 #include "tapto/vnc_session.h"
@@ -413,6 +414,17 @@ void usage(const char* argv0) {
         << "                      layout-test.png, and exit. No model involved —\n"
         << "                      use it to check a layout against a real guest.\n"
         << "  --version           Version and the commit it was built from\n\n"
+        << "MCP server — hand the same tools to somebody else's model:\n"
+        << "  --mcp               Connect, then serve the screen-control tools over\n"
+        << "                      MCP instead of driving them. No API key and no\n"
+        << "                      provider are needed, and no task is accepted:\n"
+        << "                      whatever connects decides what to do.\n"
+        << "  --mcp-port <n>      Port (default: " << tapto::kDefaultMcpPort << ")\n"
+        << "  Streamable HTTP on http://127.0.0.1:<port>/mcp, bound to loopback and\n"
+        << "  unauthenticated — anything able to run a program as you can drive the\n"
+        << "  screen. Runs until Ctrl-C. Register it with:\n"
+        << "    claude mcp add --transport http tapto-vnc \\\n"
+        << "      http://127.0.0.1:" << tapto::kDefaultMcpPort << "/mcp\n\n"
         << "A provider is a named block in the config store, so several backends —\n"
         << "including two local servers speaking the same API — coexist in one file:\n\n"
         << "  qwen36-provider-type = openai        gemma4-provider-type = openai\n"
@@ -639,6 +651,8 @@ int main(int argc, char** argv) {
     int maxSteps = 0;
     int resolutionWidth = 0, resolutionHeight = 0;
     bool quiet = false;
+    bool mcpMode = false;
+    int mcpPort = tapto::kDefaultMcpPort;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -656,6 +670,7 @@ int main(int argc, char** argv) {
         }
         if (arg == "--insecure") { vcenter.insecure = true; continue; }
         if (arg == "--quiet")    { quiet = true; continue; }
+        if (arg == "--mcp")      { mcpMode = true; continue; }
         if (const char* v = option(argc, argv, i, "--host"))      { vnc.host = v; continue; }
         if (const char* v = option(argc, argv, i, "--display"))   { vnc.display = static_cast<uint16_t>(std::atoi(v)); continue; }
         if (const char* v = option(argc, argv, i, "--password"))  { vnc.password = v; continue; }
@@ -678,6 +693,7 @@ int main(int argc, char** argv) {
         if (const char* v = option(argc, argv, i, "--wake"))      { wake = v; continue; }
         if (const char* v = option(argc, argv, i, "--grid"))      { grid = v; continue; }
         if (const char* v = option(argc, argv, i, "--max-steps")) { maxSteps = std::atoi(v); continue; }
+        if (const char* v = option(argc, argv, i, "--mcp-port"))  { mcpPort = std::atoi(v); continue; }
         if (const char* v = option(argc, argv, i, "--trace"))     { trace = v; continue; }
         if (const char* v = option(argc, argv, i, "-f"))          { promptFile = v; continue; }
         if (const char* v = option(argc, argv, i, "--file"))      { promptFile = v; continue; }
@@ -689,6 +705,25 @@ int main(int argc, char** argv) {
         // Everything else is the task text.
         if (!task.empty()) task += " ";
         task += arg;
+    }
+
+    // --mcp hands the tools to somebody else's model, so the things that
+    // describe a task for *our* model have nobody to reach. Silently ignoring
+    // them would look exactly like the task being sent and refused.
+    if (mcpMode) {
+        if (mcpPort < 1 || mcpPort > 65535) {
+            std::cerr << "ERROR: --mcp-port expects 1..65535\n";
+            return 2;
+        }
+        if (!task.empty() || !promptFile.empty()) {
+            std::cerr << "ERROR: --mcp serves the tools to an MCP client; it does not run "
+                         "a task itself.\nDrop the task text and -f, and give the task to "
+                         "whatever connects.\n";
+            return 2;
+        }
+    } else if (mcpPort != tapto::kDefaultMcpPort) {
+        std::cerr << "ERROR: --mcp-port only means something with --mcp.\n";
+        return 2;
     }
 
     // Read before a single connection is made: a mistyped path should cost
@@ -771,12 +806,15 @@ int main(int argc, char** argv) {
     // already set hides the reference that is actually broken. Falling through
     // to the next source would be worse still — that is how one endpoint ends
     // up being handed another one's key.
-    if (!key.error.empty()) {
+    // Not under --mcp: no model is called, so there is no key to need and no
+    // provider block to be wrong. Demanding one would make an unconfigured
+    // machine unable to serve its own screen.
+    if (!mcpMode && !key.error.empty()) {
         std::cerr << "ERROR: provider '" << provider << "': " << key.error << "\n";
         return 2;
     }
     const std::string apiKey = key.value;
-    if (apiKey.empty()) {
+    if (!mcpMode && apiKey.empty()) {
         std::cerr << "ERROR: no API key for provider '" << provider << "'. Add '"
                   << provider << "-api-key' to the tapto config store, or set "
                   << defaults.apiKeyEnv;
@@ -918,8 +956,10 @@ int main(int argc, char** argv) {
     // being obvious from the command line — and a block pointing at the wrong
     // dialect is otherwise invisible until the requests come back malformed.
     // The key is deliberately not shown.
-    std::cout << "Provider " << provider << " (" << dialect << ") " << model
-              << " at " << host << "\n";
+    if (!mcpMode) {
+        std::cout << "Provider " << provider << " (" << dialect << ") " << model
+                  << " at " << host << "\n";
+    }
 
     // Naming a VM selects the VMware console; everything else in that branch
     // can live in the config store, and with default-vm so can the name itself.
@@ -1064,9 +1104,15 @@ int main(int argc, char** argv) {
         establish(session);
 
         std::cout << "Connected to " << session.desktopName() << " ("
-                  << session.width() << "x" << session.height() << ")\n"
-                  << "Provider: " << provider << "  model: " << model
-                  << "  effort: " << effort << "\n\n";
+                  << session.width() << "x" << session.height() << ")\n";
+        // Naming a model that will never be called reads as a claim about what
+        // is about to drive the screen, and under --mcp that is whatever
+        // connects.
+        if (!mcpMode) {
+            std::cout << "Provider: " << provider << "  model: " << model
+                      << "  effort: " << effort << "\n";
+        }
+        std::cout << "\n";
 
         // Prime the framebuffer so the model's first screenshot is complete
         // rather than the partial first update the server happens to send.
@@ -1144,6 +1190,36 @@ int main(int argc, char** argv) {
                 "Connected, before the first prompt", meta);
         }
 
+        // Spliced rather than always present: telling a model to read rulers
+        // that are not in the picture is worse than saying nothing at all, and
+        // the move-first paragraphs are a change of method rather than an extra
+        // hint — a run that is not using them should not be reading them.
+        std::string systemPrompt = kSystemPrompt;
+        if (tapto::screenshotGrid() > 0) systemPrompt += kGridGuidance;
+        systemPrompt += kSystemPromptZoom;
+        if (moveFirst == "on") systemPrompt += kMoveGuidance;
+        systemPrompt += kSystemPromptRest;
+        // Only for a prompt file. In an interactive session the person reading
+        // the reply is the escape hatch, and a rule about a magic word nothing
+        // acts on would be noise in the prompt.
+        if (!filePrompts.empty()) systemPrompt += kBlockedGuidance;
+
+        // Serving the tools instead of driving them. Everything above still
+        // applies — the console is open, the tools are built, a drop still
+        // reconnects — and the only thing that changes is who decides what to
+        // click. Nothing below this point is reached, because there is no model
+        // of ours to configure and no conversation to hold.
+        if (mcpMode) {
+            tapto::McpOptions mcp;
+            mcp.port = mcpPort;
+            // The same prose our own model would have been given. A tool
+            // description says what vnc_zoom does; this is the part that says
+            // to zoom before clicking anything small, and a borrowed model
+            // needs it at least as much as ours does.
+            mcp.instructions = systemPrompt;
+            return tapto::runMcpServer(context, mcp);
+        }
+
         // The last argument is the API key itself, despite the parameter being
         // named apiKeyRef — the clients return it verbatim from getApiKey().
         // Chosen by dialect, never by name: 'gemma4' is a name this program has
@@ -1168,19 +1244,6 @@ int main(int argc, char** argv) {
         if (thinking == "on")       client->setThinkingBudget(1);
         else if (thinking == "off") client->setThinkingBudget(0);
 
-        // Spliced rather than always present: telling a model to read rulers
-        // that are not in the picture is worse than saying nothing at all, and
-        // the move-first paragraphs are a change of method rather than an extra
-        // hint — a run that is not using them should not be reading them.
-        std::string systemPrompt = kSystemPrompt;
-        if (tapto::screenshotGrid() > 0) systemPrompt += kGridGuidance;
-        systemPrompt += kSystemPromptZoom;
-        if (moveFirst == "on") systemPrompt += kMoveGuidance;
-        systemPrompt += kSystemPromptRest;
-        // Only for a prompt file. In an interactive session the person reading
-        // the reply is the escape hatch, and a rule about a magic word nothing
-        // acts on would be noise in the prompt.
-        if (!filePrompts.empty()) systemPrompt += kBlockedGuidance;
         client->setSystemPrompt(systemPrompt);
         client->start();
 

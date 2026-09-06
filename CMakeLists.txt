@@ -149,6 +149,7 @@ add_library(tapto_agent STATIC
   src/openai.cpp
   src/config.cpp
   src/input_map.cpp
+  src/mcp_server.cpp
   src/paths.cpp
   src/secret.cpp
   src/tool_image.cpp

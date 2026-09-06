@@ -65,6 +65,21 @@ jobs:
             *no-git*) echo "::error::version stamp has no repository to describe"; exit 1 ;;
           esac
 
+          # --mcp rejects the arguments that have nobody to reach, and it does
+          # so before anything connects — which is what makes it testable here,
+          # with no VNC server and no API key on the runner. A regression that
+          # let these through would not fail; it would start a server that
+          # silently dropped the task it was given.
+          if ./build/tapto-vnc --mcp "open notepad" 2>/dev/null; then
+            echo "::error::--mcp accepted a task instead of refusing it"; exit 1
+          fi
+          if ./build/tapto-vnc --mcp --mcp-port 0 2>/dev/null; then
+            echo "::error::--mcp-port accepted 0"; exit 1
+          fi
+          if ./build/tapto-vnc --mcp-port 9000 2>/dev/null; then
+            echo "::error::--mcp-port was accepted without --mcp"; exit 1
+          fi
+
       - name: Smoke test (Windows)
         if: runner.os == 'Windows'
         run: |

@@ -31,6 +31,9 @@ tapto-vnc --host 192.0.2.10 "Open the settings app and turn on dark mode"
   needs no VNC server of its own.
 - **Remote keyboard layouts** — text is translated to the guest's layout, since
   RFB carries key positions rather than characters.
+- **Or hand the tools to another model** — `--mcp` serves the same nine tools
+  over MCP on localhost, so Claude Code, an editor, or anything else that
+  speaks the protocol can drive the screen instead.
 - **Self-contained** — one C++17 binary; nlohmann/json, cpp-httplib and zlib
   are fetched at build time.
 
@@ -369,6 +372,59 @@ typing `@` on a Swedish guest means pressing a different key than on a US one.
 Characters the layout cannot reach are typed via Alt+numpad. See
 [docs/keyboard-layouts.md](docs/keyboard-layouts.md).
 
+## Serving the tools over MCP
+
+`--mcp` turns the program inside out. Instead of connecting to a screen and
+driving it with a model of its own, it connects to the screen and offers the
+same nine tools to somebody else's model over
+[MCP](https://modelcontextprotocol.io):
+
+```sh
+tapto-vnc --host 192.0.2.10 --mcp
+```
+
+```
+Connected to QEMU (winvm-install) (1024x768)
+
+MCP server on http://127.0.0.1:8722/mcp
+Add it with: claude mcp add --transport http tapto-vnc http://127.0.0.1:8722/mcp
+Ctrl-C to stop.
+```
+
+No API key and no provider configuration are needed, because nothing here calls
+a model — whatever connects brings its own. A task on the command line is
+refused rather than ignored, for the same reason: there is nobody to give it to.
+Everything else still applies. The connection is made the usual way, so `--vm`,
+`--layout`, `--grid` and the rest work as they do for a normal run, a dropped
+console still reconnects itself, and `--screenshots` still records the session.
+The terminal prints each call as it happens — `Click left (412,300)` — so you
+can watch a run you are not driving.
+
+The tool descriptions travel with the tools, and the guidance our own model
+would have been given (zoom before clicking anything small, don't guess
+credentials, confirm before anything irreversible) is served as the MCP
+`instructions`, which a well-behaved client puts in front of its model. A
+borrowed model needs it at least as much as ours does.
+
+Transport is Streamable HTTP: `POST /mcp`, one JSON-RPC message per request,
+replies as `application/json`. Nothing is streamed back, so `GET /mcp` answers
+405. Calls are serialised — there is one screen, and two clients clicking on it
+at once is not a thing to support.
+
+**The server is unauthenticated.** It binds `127.0.0.1` and nothing else, so it
+is not reachable from another machine, but anything able to run a program as you
+can drive that screen for as long as the server is up. Browsers are the other
+way in, and are handled: a page you visit can POST to a loopback address, and
+DNS rebinding can make a hostname it controls resolve here — so requests
+carrying a browser `Origin` are refused unless that origin is itself loopback.
+What a page cannot do is forge that header. Run it while you need it, stop it
+when you don't, and treat it like the shell it effectively is.
+
+One server per port: a second `tapto-vnc --mcp` on a port already in use exits
+rather than starting. That is deliberate. Two of them would each be attached to
+a different machine, and the client's screenshot could come from one while its
+click landed on the other.
+
 ## Safety
 
 The model is driving a real machine. It is told not to guess credentials, to
@@ -376,6 +432,10 @@ confirm before irreversible actions, and to check that a click did what it
 intended. None of that substitutes for pointing it at a machine you are willing
 to have it break. Screenshots contain whatever is on that screen, and
 `--screenshots` writes them to disk unencrypted.
+
+Under `--mcp` the same is true of a model you did not configure and prompts you
+did not write; the server has no authentication, and the section above is worth
+reading before leaving one running.
 
 ## Status
 
