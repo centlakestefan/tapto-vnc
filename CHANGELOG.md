@@ -66,6 +66,10 @@ carries everything else.
 
 ### Fixed
 
+- On an openai-dialect server, a turn stopped by the step cap no longer prints
+  the model's reasoning a second time as the final reply, and Harmony channel
+  tokens leaking into `reasoning_content` are scrubbed as they already were
+  from content. From libtapto (tapto-word 5000745).
 - The vendored RFB stack builds on gcc again: `rfb_types.hpp` now includes
   `<cstddef>` for the unqualified `size_t` its sources use, which MSVC's
   headers supplied transitively and libstdc++ does not. ([024e1f0])
@@ -169,6 +173,10 @@ measurements taken against the old schema do not carry over.
 
 ### Fixed
 
+- On an openai-dialect server, a turn stopped by the step cap no longer prints
+  the model's reasoning a second time as the final reply, and Harmony channel
+  tokens leaking into `reasoning_content` are scrubbed as they already were
+  from content. From libtapto (tapto-word 5000745).
 - A reset socket is readable, not idle. Both transports polled for `POLLIN`
   alone, and Windows signals a dead connection with `POLLHUP`/`POLLERR` and
   never `POLLIN` — so a dropped console was indistinguishable from a quiet one
@@ -244,6 +252,10 @@ provider's name when `provider` is absent.
 
 ### Fixed
 
+- On an openai-dialect server, a turn stopped by the step cap no longer prints
+  the model's reasoning a second time as the final reply, and Harmony channel
+  tokens leaking into `reasoning_content` are scrubbed as they already were
+  from content. From libtapto (tapto-word 5000745).
 - `SetScreenResolution` retries on `ToolsUnavailableFault` instead of ending the
   run. VMware Tools is briefly unavailable after a boot or an update, and the
   condition clears in seconds. ([cef058c])

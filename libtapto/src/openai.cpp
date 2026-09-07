@@ -24,6 +24,12 @@ namespace ui = tapto::ui;
 
 namespace {
 
+/// <summary>Strip Harmony / channel-style special tokens from user-visible
+/// content. Declared here so extractReasoning can route its value through the
+/// same scrub (reasoning_content can leak channel tokens just like content can
+/// when the server's extractor doesn't run).</summary>
+std::string stripChannelTokens(std::string text);
+
 /// <summary>Field names carrying chain-of-thought on an assistant message.
 /// There is no standard: vLLM, llama.cpp and sglang with the deepseek/qwen
 /// templates use `reasoning_content`, while some gateways and newer builds use
@@ -31,13 +37,14 @@ namespace {
 const char* const kReasoningFields[] = {"reasoning_content", "reasoning"};
 
 /// <summary>Returns the assistant message's chain-of-thought as a string when
-/// present and non-empty, otherwise an empty string.</summary>
+/// present and non-empty — scrubbed of channel-style tokens — otherwise an
+/// empty string.</summary>
 std::string extractReasoning(const json& message) {
     for (const char* field : kReasoningFields) {
         if (!message.contains(field) || message[field].is_null()) continue;
         if (!message[field].is_string()) continue;
         const std::string value = message[field].get<std::string>();
-        if (!value.empty()) return value;
+        if (!value.empty()) return stripChannelTokens(value);
     }
     return "";
 }
@@ -692,9 +699,14 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
     }
 
     // Collect the assistant's final text reply (falling back to reasoning
-    // content for reasoning models that emit only that).
+    // content for reasoning models that emit only that). Skip the fallback on
+    // a turn that ended mid-tool-call (iteration cap or user cancel): the CoT
+    // was already surfaced to the transcript in the loop, so repeating it here
+    // as the "final reply" would print the same block twice.
     std::string reply = extractContent(message);
-    if (reply.empty()) {
+    const bool stoppedMidToolCall =
+        message.contains("tool_calls") && !message["tool_calls"].empty();
+    if (reply.empty() && !stoppedMidToolCall) {
         reply = extractReasoning(message);
     }
     if (choice.value("finish_reason", std::string()) == "length") {

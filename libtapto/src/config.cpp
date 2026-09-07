@@ -19,7 +19,7 @@ namespace tapto {
 namespace {
 
 std::string trim(const std::string& s) {
-    static const char* ws = " \t\r\n";
+    static const char* ws = " \t\r";
     size_t begin = s.find_first_not_of(ws);
     if (begin == std::string::npos) return std::string();
     size_t end = s.find_last_not_of(ws);
@@ -36,55 +36,102 @@ std::string strip_newlines(const std::string& s) {
     return out;
 }
 
+// Split `line` into (key, value) if it is a well-formed "key = value" line,
+// otherwise return false. Comment lines (first non-blank char is '#' or ';'),
+// blank lines, and lines without an equals sign are not key/value lines.
+bool parse_line(const std::string& line, std::string& key_out, std::string& value_out) {
+    std::string text = trim(line);
+    if (text.empty() || text[0] == '#' || text[0] == ';') return false;
+    size_t eq = text.find('=');
+    if (eq == std::string::npos) return false;
+    key_out = trim(text.substr(0, eq));
+    if (key_out.empty()) return false;
+    value_out = trim(text.substr(eq + 1));
+    return true;
+}
+
 } // namespace
 
 Config Config::load(const fs::path& path) {
     Config cfg;
     std::ifstream in(path);
-    if (!in) return cfg; // missing file -> empty config
+    if (!in) {
+        // Missing file: seed with the header comment so save() yields a
+        // recognizable, non-empty config (matching the previous behaviour).
+        cfg.lines_.push_back("# tapto-code");
+        return cfg;
+    }
 
+    // Keep every line verbatim — comments, blank lines, and ordering included.
+    // Only a trailing CR (from CRLF files) is dropped, so on Windows the file
+    // round-trips to clean LF endings.
     std::string line;
     while (std::getline(in, line)) {
-        std::string text = trim(line);
-        if (text.empty() || text[0] == '#' || text[0] == ';') continue;
-
-        size_t eq = text.find('=');
-        if (eq == std::string::npos) continue; // ignore malformed lines
-
-        std::string key = trim(text.substr(0, eq));
-        std::string value = trim(text.substr(eq + 1));
-        if (!key.empty()) cfg.set(key, value);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        cfg.lines_.push_back(line);
     }
     return cfg;
 }
 
 std::optional<std::string> Config::get(const std::string& key) const {
-    for (const auto& entry : entries_) {
-        if (entry.first == key) return entry.second;
+    // Last occurrence in the file wins (the previous "update in place / append"
+    // semantics made the last value authoritative).
+    for (size_t i = lines_.size(); i-- > 0;) {
+        std::string k, v;
+        if (parse_line(lines_[i], k, v) && k == key) return v;
     }
     return std::nullopt;
 }
 
 void Config::set(const std::string& key, const std::string& value) {
-    std::string k = strip_newlines(key);
+    std::string k = trim(strip_newlines(key));
     std::string v = strip_newlines(value);
-    for (auto& entry : entries_) {
-        if (entry.first == k) {
-            entry.second = v;
+    if (k.empty()) return;
+
+    // Rewrite the last matching line in place so the rest of the file is left
+    // untouched; if the key isn't present yet, append a new line to the end.
+    for (size_t i = lines_.size(); i-- > 0;) {
+        std::string lk, lv;
+        if (parse_line(lines_[i], lk, lv) && lk == k) {
+            lines_[i] = k + " = " + v;
             return;
         }
     }
-    entries_.emplace_back(k, v);
+    lines_.push_back(k + " = " + v);
 }
 
 bool Config::unset(const std::string& key) {
-    for (auto it = entries_.begin(); it != entries_.end(); ++it) {
-        if (it->first == key) {
-            entries_.erase(it);
-            return true;
+    std::vector<std::string> kept;
+    kept.reserve(lines_.size());
+    bool removed = false;
+    for (const auto& line : lines_) {
+        std::string k, v;
+        if (parse_line(line, k, v) && k == key) {
+            removed = true;
+            continue; // drop this line
         }
+        kept.push_back(line);
     }
-    return false;
+    if (removed) lines_ = std::move(kept);
+    return removed;
+}
+
+std::vector<Config::Entry> Config::entries() const {
+    std::vector<Entry> out;
+    for (const auto& line : lines_) {
+        std::string k, v;
+        if (!parse_line(line, k, v)) continue; // skip comments / blank / malformed
+        bool found = false;
+        for (auto& e : out) {
+            if (e.first == k) {
+                e.second = v; // last value wins
+                found = true;
+                break;
+            }
+        }
+        if (!found) out.emplace_back(k, v);
+    }
+    return out;
 }
 
 // The store may hold a literal API key, so on POSIX the file is created
@@ -102,9 +149,12 @@ void Config::save(const fs::path& path) const {
 #endif
     }
 
-    std::string text = "# tapto-code\n";
-    for (const auto& entry : entries_) {
-        text += entry.first + " = " + entry.second + "\n";
+    // Write the stored lines verbatim so comments, blank lines, and ordering
+    // made by hand in the file survive a save.
+    std::string text;
+    for (const auto& line : lines_) {
+        text += line;
+        text += '\n';
     }
 
 #ifndef _WIN32
@@ -124,7 +174,9 @@ void Config::save(const fs::path& path) const {
     }
     ::close(fd);
 #else
-    std::ofstream out(path, std::ios::trunc);
+    // Binary, so Windows does not turn the LF that load() normalised to back
+    // into CRLF: the file is meant to round-trip byte for byte.
+    std::ofstream out(path, std::ios::trunc | std::ios::binary);
     if (!out) {
         throw std::runtime_error("cannot write config file: " + path.string());
     }

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <string>
 
@@ -84,6 +85,31 @@ void test_config_roundtrip() {
     CHECK(back.unset("qwen36-model"));
     CHECK(!back.unset("qwen36-model"));
     CHECK_EQ(back.entries().size(), std::size_t(2));
+
+    fs::remove(path);
+}
+
+// A file edited by hand survives load -> set/unset -> save: comments, blank
+// lines and order stay, only the touched key's line changes, and the bytes
+// are LF on every platform (CRLF in is normalised, and never written back).
+void test_config_preserves_file() {
+    const fs::path path = scratch_file("config-preserve");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "# tapto-code\r\n# my comment\r\n\r\nprovider = claude\r\nprint-cot = true\r\n";
+    }
+    tapto::Config cfg = tapto::Config::load(path);
+    cfg.set("print-cot", "false");
+    cfg.set("model", "claude-sonnet-5");
+    CHECK(cfg.unset("provider"));
+    cfg.save(path);
+
+    std::string bytes;
+    {
+        std::ifstream in(path, std::ios::binary);
+        bytes.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    CHECK_EQ(bytes, std::string("# tapto-code\n# my comment\n\nprint-cot = false\nmodel = claude-sonnet-5\n"));
 
     fs::remove(path);
 }
@@ -659,6 +685,7 @@ void test_certificates() {
 
 int main() {
     test_config_roundtrip();
+    test_config_preserves_file();
     test_secret_literal_and_env();
     test_sanitize_utf8();
     test_base64();
