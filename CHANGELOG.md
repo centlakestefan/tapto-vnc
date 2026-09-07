@@ -40,6 +40,12 @@ carries everything else.
   unchanged; the two are separate because the dialects spell it differently and
   accept different values. Same key, same resolution order, as tapto-code.
 
+### Fixed
+
+- The vendored RFB stack builds on gcc again: `rfb_types.hpp` now includes
+  `<cstddef>` for the unqualified `size_t` its sources use, which MSVC's
+  headers supplied transitively and libstdc++ does not. ([024e1f0])
+
 ## [0.3.0] — 2026-08-17
 
 ### Added
@@ -237,6 +243,7 @@ screenshots as tools. ([3d11be9])
 [0.3.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/centlakestefan/tapto-vnc/releases/tag/v0.1.0
+[024e1f0]: https://github.com/centlakestefan/tapto-vnc/commit/024e1f0
 [3d11be9]: https://github.com/centlakestefan/tapto-vnc/commit/3d11be9
 [42a022d]: https://github.com/centlakestefan/tapto-vnc/commit/42a022d
 [f069d78]: https://github.com/centlakestefan/tapto-vnc/commit/f069d78

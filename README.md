@@ -284,6 +284,8 @@ The store is shared with `tapto-code`, which can write it for you:
 | `--screenshots <dir>` | save every frame — a click writes the screen it aimed at with a red dot, then the screen it produced — plus `frames.jsonl` describing them |
 | `--trace <path>` | request/response diagnostics, including cache usage |
 | `-f <file>` | send the file's prompts as consecutive turns, separated by a line of `===`; a final `/exit` block ends the run |
+| `--mcp` | connect, then [serve the tools over MCP](#serving-the-tools-over-mcp) to another model instead of driving them; no key, no provider, no task |
+| `--mcp-port <n>` | port for `--mcp` (default 8722) |
 | `--require-zoom on` | refuse a click unless a zoom containing it came first — for weaker models |
 | `--move-first on` | ask the model to hover a point and see what reacts before clicking it — advice, not a gate |
 | `--grid 50` | rule and grid the full screenshots too, every 50 px — an experiment, off by default |
@@ -394,6 +396,8 @@ Ctrl-C to stop.
 No API key and no provider configuration are needed, because nothing here calls
 a model — whatever connects brings its own. A task on the command line is
 refused rather than ignored, for the same reason: there is nobody to give it to.
+`--mcp-port <n>` moves the server off 8722; the printed `claude mcp add` line
+follows it.
 Everything else still applies. The connection is made the usual way, so `--vm`,
 `--layout`, `--grid` and the rest work as they do for a normal run, a dropped
 console still reconnects itself, and `--screenshots` still records the session.
