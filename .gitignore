@@ -22,6 +22,8 @@
 !/CMakeLists.txt
 !/src/
 !/include/
+!/libtapto/
+!/tests/
 !/docs/
 !/third_party/
 !/tools/
