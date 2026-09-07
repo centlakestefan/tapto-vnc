@@ -176,7 +176,7 @@ const Folder* FolderSet::owner_of(const fs::path& canonical) const {
     return nullptr;
 }
 
-std::string FolderSet::add(const std::string& path, std::string* label_out) {
+std::string FolderSet::add(const std::string& path, std::string* label_out, bool writable) {
     if (path.empty()) return "ERROR: no folder given.";
     std::error_code ec;
     const fs::path given(path);
@@ -194,9 +194,17 @@ std::string FolderSet::add(const std::string& path, std::string* label_out) {
     Folder f;
     f.root = root;
     f.label = label_for(root, m_folders);
+    f.writable = writable;
     if (label_out) *label_out = f.label;
     m_folders.push_back(std::move(f));
     return "";
+}
+
+bool FolderSet::set_writable(const std::string& path_or_label, bool writable) {
+    const Folder* f = find(path_or_label);
+    if (!f) return false;
+    m_folders[static_cast<size_t>(f - m_folders.data())].writable = writable;
+    return true;
 }
 
 bool FolderSet::remove(const std::string& path_or_label) {
@@ -579,16 +587,39 @@ std::vector<ToolSpec> folder_tools(const FolderSet& folders) {
 
 std::string folder_prompt(const FolderSet& folders) {
     if (folders.empty()) return "";
+    bool any_writable = false;
+    for (const auto& f : folders.folders()) any_writable = any_writable || f.writable;
+
+    // The all-read-only wording is the original one and is unchanged: a
+    // program that never grants write access gets the same prompt as before.
+    if (!any_writable) {
+        std::string out =
+            "The user has granted you read-only access to these folders on their machine, "
+            "so you can read a software project and write about it:\n";
+        for (const auto& f : folders.folders()) {
+            out += "  " + f.label + "  (" + f.root.generic_string() + ")\n";
+        }
+        out += "Use list_files to see a folder's shape, search_files to find where something "
+               "lives, and read_file to read it, addressing files as <label>/<relative path>. "
+               "You cannot modify these files, and nothing outside these folders is readable; "
+               "if you need another folder, ask the user to grant it with /add-folder.";
+        return out;
+    }
+
     std::string out =
-        "The user has granted you read-only access to these folders on their machine, "
-        "so you can read a software project and write about it:\n";
+        "The user has granted you access to these folders on their machine, beyond "
+        "your usual working directory:\n";
     for (const auto& f : folders.folders()) {
-        out += "  " + f.label + "  (" + f.root.generic_string() + ")\n";
+        out += "  " + f.label + "  (" + f.root.generic_string() + ")" +
+               (f.writable ? "  -- read and write" : "  -- read-only") + "\n";
     }
     out += "Use list_files to see a folder's shape, search_files to find where something "
            "lives, and read_file to read it, addressing files as <label>/<relative path>. "
-           "You cannot modify these files, and nothing outside these folders is readable; "
-           "if you need another folder, ask the user to grant it with /add-folder.";
+           "Under a folder marked read and write you may also create and edit files with "
+           "your file-editing tool, giving the path either as <label>/<relative path> or as "
+           "the absolute path shown above. A read-only folder cannot be modified, and "
+           "nothing outside these folders is reachable; if you need another folder, ask "
+           "the user to grant it with /add-folder.";
     return out;
 }
 

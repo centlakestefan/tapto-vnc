@@ -481,6 +481,24 @@ void test_folder_set_grants() {
     CHECK_EQ(set.add((t.root / "other" / "proj").string(), &label), std::string(""));
     CHECK_EQ(label, std::string("proj-2"));
 
+    // Read-only by default; the mode is a grant the program's editor consults.
+    CHECK(set.get("proj") != nullptr);
+    CHECK(!set.get("proj")->writable);
+    CHECK(set.set_writable("proj", true));
+    CHECK(set.get("proj")->writable);
+    CHECK(!set.set_writable("nope", true));
+    // Re-granting leaves the mode alone; a fresh grant can ask for it.
+    CHECK_EQ(set.add((t.root / "proj").string(), &label, false), std::string(""));
+    CHECK(set.get("proj")->writable);
+    fs::create_directories(t.root / "rw");
+    CHECK_EQ(set.add((t.root / "rw").string(), &label, true), std::string(""));
+    CHECK(set.get("rw")->writable);
+    CHECK(tapto::folder_prompt(set).find("read and write") != std::string::npos);
+    CHECK(set.set_writable("rw", false));
+    CHECK(set.set_writable("proj", false));
+    CHECK(tapto::folder_prompt(set).find("read and write") == std::string::npos);
+    CHECK(set.remove("rw"));
+
     // Remove by label and by path.
     CHECK(set.remove("proj-2"));
     CHECK(!set.remove("proj-2"));

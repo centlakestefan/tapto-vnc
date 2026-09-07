@@ -36,6 +36,11 @@ namespace tapto {
 struct Folder {
     std::string label;          // how the model names it: the last path component, made unique
     std::filesystem::path root; // canonical absolute path
+    // Whether the program's own editing tool may write under this root. The
+    // tools in this file never write, whatever the flag says: it is a grant
+    // the program's editor consults (tapto-code's does), and a program with
+    // no editor simply never sets it. Off by default.
+    bool writable = false;
 };
 
 class FolderSet {
@@ -43,9 +48,17 @@ public:
     // Grant a directory. Returns an empty string on success and fills
     // `label_out` (when given) with the label the model will see; otherwise an
     // "ERROR: ..." sentence. Granting a folder already granted is a no-op
-    // success, and granting a subfolder of a granted root is allowed but
-    // pointless, so it is reported as such rather than refused.
-    std::string add(const std::string& path, std::string* label_out = nullptr);
+    // success that leaves its mode alone (see set_writable), and granting a
+    // subfolder of a granted root is allowed but pointless, so it is reported
+    // as such rather than refused.
+    std::string add(const std::string& path, std::string* label_out = nullptr,
+                    bool writable = false);
+
+    // Change a granted folder's mode. False if nothing matched.
+    bool set_writable(const std::string& path_or_label, bool writable);
+
+    // The granted folder a label or path names, or null.
+    const Folder* get(const std::string& path_or_label) const { return find(path_or_label); }
 
     // Revoke by label or by path. False if nothing matched.
     bool remove(const std::string& path_or_label);
