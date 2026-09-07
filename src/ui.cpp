@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 
-#include "tapto/ui.h"
+#include "tapto/termui.h"
 
 #include "tapto/frame_index.h"
 

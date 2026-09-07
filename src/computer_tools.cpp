@@ -780,6 +780,99 @@ json objectSchema(json properties, std::vector<std::string> required) {
     };
 }
 
+// The status-line label for a tool call: what the model is about to do to the
+// screen, in words a human watching the run can follow without reading raw
+// JSON. Attached to each ToolSpec as its `display` hook; the backends and the
+// MCP server reach it through getToolDisplayName(), which falls back to the raw
+// name if a hook is missing or throws.
+//
+//   vnc_screenshot            -> "Screenshot"
+//   vnc_click                 -> "Click left (412,300)"
+//   vnc_zoom                  -> "Zoom at (150,225)"
+//   vnc_move                  -> "Move to (412,300)"
+//   vnc_drag                  -> "Drag (10,20) -> (90,120)"
+//   vnc_scroll                -> "Scroll down x3 at (400,500)"
+//   vnc_type                  -> "Type \"hello world\""
+//   vnc_key                   -> "Key ctrl+alt+delete"
+//   vnc_wait                  -> "Wait 1500ms"
+//   Unknown tool              -> raw tool name
+std::string displayLabel(const std::string& tool_name, const json& input) {
+    auto str = [&](const char* field, const std::string& fallback = "") -> std::string {
+        if (input.is_object() && input.contains(field) && input[field].is_string()) {
+            return input[field].get<std::string>();
+        }
+        return fallback;
+    };
+    auto num = [&](const char* field, int fallback = 0) -> int {
+        if (input.is_object() && input.contains(field) && input[field].is_number()) {
+            return input[field].get<int>();
+        }
+        return fallback;
+    };
+    // Coordinates for display. Deliberately more forgiving than num() above and
+    // deliberately distinguishes "absent or unreadable" from a real zero:
+    // models sometimes send coordinates as strings, which the executors accept
+    // via intField(), so a status line that silently printed 0 for those
+    // disagreed with the click that actually happened. "?" says which case it
+    // is instead of inventing a plausible number.
+    auto coord = [&](const char* field) -> std::string {
+        if (!input.is_object() || !input.contains(field)) return "?";
+        const json& value = input[field];
+        if (value.is_number_integer()) return std::to_string(value.get<int>());
+        if (value.is_number_float())   return std::to_string(static_cast<int>(value.get<double>()));
+        if (value.is_string()) {
+            try { return std::to_string(std::stoi(value.get<std::string>())); }
+            catch (...) { return "?"; }
+        }
+        return "?";
+    };
+    auto point = [&](const char* xf, const char* yf) -> std::string {
+        return "(" + coord(xf) + "," + coord(yf) + ")";
+    };
+
+    if (tool_name == "vnc_screenshot") return "Screenshot";
+
+    if (tool_name == "vnc_click") {
+        const int clicks = num("clicks", 1);
+        std::string label = "Click " + str("button", "left");
+        if (clicks > 1) label += " x" + std::to_string(clicks);
+        return label + " " + point("x", "y");
+    }
+
+    // The region size and magnification are fixed, so there is nothing to show
+    // but where the model looked.
+    if (tool_name == "vnc_zoom") return "Zoom at " + point("x", "y");
+
+    if (tool_name == "vnc_move") return "Move to " + point("x", "y");
+
+    if (tool_name == "vnc_drag") {
+        return "Drag " + point("from_x", "from_y") + " -> " + point("to_x", "to_y");
+    }
+
+    if (tool_name == "vnc_scroll") {
+        return "Scroll " + str("direction", "down") + " x" + std::to_string(num("amount", 3)) +
+               " at " + point("x", "y");
+    }
+
+    if (tool_name == "vnc_type") {
+        std::string text = str("text");
+        // Keep the status line to one row: long text is elided, and newlines
+        // would otherwise break the in-place rewrite.
+        for (char& c : text) {
+            if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+        }
+        constexpr size_t kMaxShown = 40;
+        if (text.size() > kMaxShown) text = text.substr(0, kMaxShown) + "...";
+        return "Type \"" + text + "\"";
+    }
+
+    if (tool_name == "vnc_key")  return "Key " + str("keys", "?");
+    if (tool_name == "vnc_wait") return "Wait " + std::to_string(num("ms", 1000)) + "ms";
+
+    // Unknown / future tool: return the raw name so nothing is lost.
+    return tool_name;
+}
+
 }  // namespace
 
 void setRequireZoom(bool require) { g_requireZoom = require; }
@@ -812,7 +905,7 @@ std::vector<ToolSpec> makeComputerTools() {
         }
         tools.push_back(ToolSpec{
             "vnc_screenshot", description, objectSchema(json::object(), {}),
-            doScreenshot, ""});
+            doScreenshot, "", {}});
     }
 
     {
@@ -826,7 +919,7 @@ std::vector<ToolSpec> makeComputerTools() {
             "vnc_click",
             "Click the mouse at a screen coordinate. Returns a screenshot taken after "
             "the click so you can confirm what happened.",
-            objectSchema(props, {"x", "y"}), doClick, ""});
+            objectSchema(props, {"x", "y"}), doClick, "", {}});
     }
 
     {
@@ -857,7 +950,7 @@ std::vector<ToolSpec> makeComputerTools() {
             "If what you wanted is not in the view, zoom again on where it actually is. A "
             "click aimed at something you cannot see in the picture lands on empty "
             "background, so move the view rather than guessing past its edge.",
-            objectSchema(props, {"x", "y"}), doZoom, ""});
+            objectSchema(props, {"x", "y"}), doZoom, "", {}});
     }
 
     tools.push_back(ToolSpec{
@@ -866,7 +959,7 @@ std::vector<ToolSpec> makeComputerTools() {
         "tooltips, or menus that open on mouse-over.",
         objectSchema(coordinateSchema("Horizontal pixel coordinate", "Vertical pixel coordinate"),
                      {"x", "y"}),
-        doMove, ""});
+        doMove, "", {}});
 
     {
         json props = json{
@@ -881,7 +974,7 @@ std::vector<ToolSpec> makeComputerTools() {
             "vnc_drag",
             "Press the mouse button at one point, move to another, and release. Use for "
             "selecting text, moving windows, or dragging sliders.",
-            objectSchema(props, {"from_x", "from_y", "to_x", "to_y"}), doDrag, ""});
+            objectSchema(props, {"from_x", "from_y", "to_x", "to_y"}), doDrag, "", {}});
     }
 
     {
@@ -894,7 +987,7 @@ std::vector<ToolSpec> makeComputerTools() {
         tools.push_back(ToolSpec{
             "vnc_scroll",
             "Scroll the mouse wheel at a screen coordinate.",
-            objectSchema(props, {"x", "y", "direction"}), doScroll, ""});
+            objectSchema(props, {"x", "y", "direction"}), doScroll, "", {}});
     }
 
     tools.push_back(ToolSpec{
@@ -911,7 +1004,7 @@ std::vector<ToolSpec> makeComputerTools() {
         objectSchema(json{{"text", {{"type", "string"},
                                     {"description", "The text to type"}}}},
                      {"text"}),
-        doType, ""});
+        doType, "", {}});
 
     tools.push_back(ToolSpec{
         "vnc_key",
@@ -921,7 +1014,7 @@ std::vector<ToolSpec> makeComputerTools() {
         objectSchema(json{{"keys", {{"type", "string"},
                                     {"description", "Key or combination, e.g. \"ctrl+s\""}}}},
                      {"keys"}),
-        doKey, ""});
+        doKey, "", {}});
 
     tools.push_back(ToolSpec{
         "vnc_wait",
@@ -930,13 +1023,17 @@ std::vector<ToolSpec> makeComputerTools() {
         objectSchema(json{{"ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", kMaxWaitMs},
                                   {"description", "Milliseconds to wait. Defaults to 1000."}}}},
                      {}),
-        doWait, ""});
+        doWait, "", {}});
 
     // Applied here rather than at each call site so a tool added later cannot
     // forget it: every one of these needs the session, and none of them can do
     // anything useful without it.
     for (ToolSpec& tool : tools) {
         tool.executor = guardConnection(tool.name, std::move(tool.executor));
+        // Likewise the status-line label: one table, keyed on the name.
+        tool.display = [name = tool.name](const json& input) {
+            return displayLabel(name, input);
+        };
     }
 
     return tools;

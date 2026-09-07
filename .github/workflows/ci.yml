@@ -45,6 +45,10 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      # The status-line labels and libtapto's own unit tests.
+      - name: Unit tests
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
       # --dump-tools builds every tool schema and serialises it, so it exercises
       # the tool registry and JSON layer without needing a screen to connect to.
       - name: Smoke test (Linux)

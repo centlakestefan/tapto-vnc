@@ -33,7 +33,7 @@
 #include "tapto/openai.h"
 #include "tapto/paths.h"
 #include "tapto/secret.h"
-#include "tapto/ui.h"
+#include "tapto/termui.h"
 #include "tapto/mcp_server.h"
 #include "tapto/version.h"
 #include "tapto/vmware_console.h"
@@ -448,7 +448,10 @@ void usage(const char* argv0) {
         << "tapto config store (~/.tapto/config, same one tapto-code uses), then a\n"
         << "default. The API key comes from $ANTHROPIC_API_KEY or the store's\n"
         << "api-key; model, effort, provider-url, max-output-tokens,\n"
-        << "max-tool-iterations, print-cot and trace-file are read from it too.\n"
+        << "max-tool-iterations, print-cot, trace-file, connection-timeout and\n"
+        << "read-timeout (seconds; the reply is not streamed, so read-timeout bounds\n"
+        << "the whole generation -- raise it for a slow local model) are read from\n"
+        << "it too.\n"
         << "<name>-reasoning-effort is the openai dialect's own effort knob, sent\n"
         << "as reasoning_effort (e.g. low, medium, high); --effort is Claude's.\n\n"
         << "Any remaining arguments are sent as the first task, ahead of any -f\n"
@@ -1145,6 +1148,11 @@ int main(int argc, char** argv) {
         config.setEffort(effort);
         config.setOpenaiReasoningEffort(reasoningEffort);
         config.setKeepRecentImages(settings.intOr("keep-recent-images", 3));
+        // Shared with tapto-code and tapto-word through the same store. The
+        // library's defaults are for a hosted provider; a slow local model
+        // wants read-timeout raised, since the whole answer arrives at once.
+        config.setConnectionTimeoutSeconds(settings.intOr("connection-timeout", 30));
+        config.setReadTimeoutSeconds(settings.intOr("read-timeout", 300));
 
         Context context;
         context.tools = tapto::makeComputerTools();

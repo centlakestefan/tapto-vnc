@@ -201,7 +201,7 @@ json McpServer::callTool(const json& params) {
     // What the model is about to do to the screen, in the same words the
     // built-in agent's status line uses, so somebody watching this terminal
     // can follow a run driven from somewhere else.
-    const std::string label = getToolDisplayName(name, arguments);
+    const std::string label = getToolDisplayName(m_context.tools, name, arguments);
 
     std::string text;
     ToolImage image;

@@ -34,8 +34,9 @@ tapto-vnc --host 192.0.2.10 "Open the settings app and turn on dark mode"
 - **Or hand the tools to another model** — `--mcp` serves the same nine tools
   over MCP on localhost, so Claude Code, an editor, or anything else that
   speaks the protocol can drive the screen instead.
-- **Self-contained** — one C++17 binary; nlohmann/json, cpp-httplib and zlib
-  are fetched at build time.
+- **Self-contained** — one C++17 binary; the shared tapto code is vendored
+  in-tree as `libtapto/`, and nlohmann/json, cpp-httplib and zlib are fetched
+  at build time.
 
 ## Build
 
@@ -51,10 +52,25 @@ Binaries land at `build/tapto-vnc` (Linux) or `build/Release/tapto-vnc.exe`
 with no model involved, and is the first thing to reach for when a capture
 looks wrong.
 
+### libtapto
+
+The code every tapto program shares — the config store and secret resolver,
+provider resolution, and the three provider clients (Claude, OpenAI-compatible,
+Gemini) with the agent loop inside — is one static library, **libtapto**,
+vendored in-tree under `libtapto/` and built with `add_subdirectory`. The same
+directory, byte for byte, lives in tapto-code and tapto-word; a fix to the
+library lands in one copy and is copied to the others. What is this program's
+own: the screen-control tools (`src/computer_tools.cpp`), the VNC session and
+WebMKS console, the MCP server, the CLI, and `src/ui.cpp`, which gives the
+`tapto::ui` functions the library declares their terminal bodies.
+
+The library's unit tests run under `ctest` alongside this program's.
+
 ### Dependencies
 
 Fetched automatically at configure time via CMake `FetchContent` (needs git and
-network on the first configure):
+network on the first configure); the first two are pinned in
+`libtapto/CMakeLists.txt`:
 
 - [nlohmann/json](https://github.com/nlohmann/json) `v3.11.3`
 - [cpp-httplib](https://github.com/yhirose/cpp-httplib) `v0.15.3`
@@ -179,6 +195,8 @@ keep-recent-images = 2
 | `keep-recent-images` | `3` | screenshots kept in the conversation |
 | `max-output-tokens` | `16000` | |
 | `max-tool-iterations` | `60` | tool calls per reply |
+| `connection-timeout` | `30` | seconds to wait for the provider to accept the connection |
+| `read-timeout` | `300` | seconds to wait for the whole answer; it is not streamed, so raise this for a slow local model |
 | `trace-file` | unset | path for request/response diagnostics |
 
 ### Naming providers

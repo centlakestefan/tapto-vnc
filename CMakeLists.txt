@@ -50,6 +50,8 @@ FetchContent_Declare(zlib
   GIT_TAG v1.3.1
   GIT_SHALLOW TRUE
 )
+# Its example programs would otherwise register as tests of ours.
+set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(zlib)
 
 # Provide compatibility alias for existing ZLIB::ZLIB usage
@@ -60,21 +62,23 @@ if(NOT TARGET ZLIB::ZLIB)
     INTERFACE_LINK_LIBRARIES zlibstatic)
 endif()
 
-set(JSON_BuildTests OFF CACHE INTERNAL "")
-FetchContent_Declare(nlohmann_json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG        v3.11.3
-  GIT_SHALLOW    TRUE
-)
-
-set(HTTPLIB_REQUIRE_OPENSSL ON CACHE INTERNAL "")
-FetchContent_Declare(httplib
-  GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-  GIT_TAG        v0.15.3
-  GIT_SHALLOW    TRUE
-)
-
-FetchContent_MakeAvailable(nlohmann_json httplib)
+# --- libtapto ---------------------------------------------------------------
+# The config store, the secret resolver, provider resolution and the three
+# provider clients with the agent loop inside are libtapto's, shared with
+# tapto-code and tapto-word. It is vendored here as a byte-identical copy of
+# the one in tapto-word (diff -r against ../tapto-word/libtapto must be empty;
+# a fix lands there first), and it brings its own pins for nlohmann_json and
+# cpp-httplib, exported on the `tapto::tapto` target, so they are not repeated
+# here. OpenSSL was found above; the library reuses that.
+#
+# What is NOT in the library, and is this program's own: the screen-control
+# tools (src/computer_tools.cpp), the VNC session, the MCP server, the CLI, and
+# src/ui.cpp, which supplies the bodies for the tapto::ui functions the library
+# declares -- a terminal status line here.
+#
+# Its unit tests run under ctest with ours.
+set(LIBTAPTO_BUILD_TESTS ON CACHE BOOL "" FORCE)
+add_subdirectory(libtapto)
 
 # --- Windows defines --------------------------------------------------------
 # <windows.h>, pulled in by <winsock2.h>, defines min and max as macros, which
@@ -115,13 +119,9 @@ add_library(tapto_vnc STATIC
   src/vnc_session.cpp
   src/vmware_console.cpp
 )
-target_link_libraries(tapto_vnc PRIVATE
-  nlohmann_json::nlohmann_json
-  httplib::httplib
-  OpenSSL::SSL
-  OpenSSL::Crypto
-)
-target_compile_definitions(tapto_vnc PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+# For tapto/log.h and the json/httplib/OpenSSL it brings; PRIVATE, since none
+# of them appear in this target's own headers.
+target_link_libraries(tapto_vnc PRIVATE tapto::tapto)
 target_include_directories(tapto_vnc PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # Separate call: CMake only accepts SYSTEM directly after the target name, so
 # it cannot be mixed into the call above. stb_image_write.h is compiled into
@@ -139,41 +139,23 @@ else()
 endif()
 
 # --- Agent ------------------------------------------------------------------
-# The provider client, tool registry and context are reused from tapto-code;
-# ui.cpp is a small local stand-in for its terminal module.
+# The screen-control tools, the MCP server and ui.cpp, on top of libtapto's
+# provider clients and agent loop.
 add_library(tapto_agent STATIC
-  src/claude.cpp
   src/computer_tools.cpp
   src/frame_index.cpp
-  src/gemini.cpp
-  src/openai.cpp
-  src/config.cpp
   src/input_map.cpp
   src/mcp_server.cpp
-  src/paths.cpp
-  src/secret.cpp
-  src/tool_image.cpp
   src/ui.cpp
 )
 target_include_directories(tapto_agent PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${TAPTO_GENERATED_DIR}")
 add_dependencies(tapto_agent tapto_version)
-# httplib and nlohmann/json are PUBLIC because claude.h includes both in its
-# own interface, so anything including it needs their headers and the matching
-# OpenSSL feature macro.
-target_link_libraries(tapto_agent
-  PUBLIC tapto_vnc nlohmann_json::nlohmann_json httplib::httplib
-         OpenSSL::SSL OpenSSL::Crypto
-)
-target_compile_definitions(tapto_agent PUBLIC CPPHTTPLIB_OPENSSL_SUPPORT)
-
-# CredReadW / CredFree, for reading API keys out of Windows Credential Manager.
-# Most Windows toolchains link advapi32 by default; say so explicitly so the
-# build doesn't depend on that.
-if(WIN32)
-  target_link_libraries(tapto_agent PRIVATE advapi32)
-endif()
+# The library exports nlohmann_json, httplib, OpenSSL, Threads and, on Windows,
+# advapi32/crypt32, together with CPPHTTPLIB_OPENSSL_SUPPORT; PUBLIC because
+# main.cpp includes the provider headers, which include httplib and json.
+target_link_libraries(tapto_agent PUBLIC tapto_vnc tapto::tapto)
 
 if(MSVC)
   target_compile_options(tapto_agent PRIVATE /W4 /EHsc /utf-8)
@@ -197,3 +179,21 @@ foreach(exe tapto-vnc vnc-smoketest)
 endforeach()
 
 install(TARGETS tapto-vnc vnc-smoketest RUNTIME DESTINATION bin)
+
+# --- Tests ------------------------------------------------------------------
+# Plain executables with assertions of their own, so `ctest` needs no test
+# framework. Run with: ctest --test-dir build --output-on-failure
+#
+# The library's own test (test-libtapto) is registered by libtapto/CMakeLists.txt.
+enable_testing()
+
+# The screen-control tools' status-line labels, through the ToolSpec::display
+# hooks. Links tapto_agent, which carries the library's ui bodies (ui.cpp).
+add_executable(test-labels tests/test_labels.cpp)
+target_link_libraries(test-labels PRIVATE tapto_agent)
+if(MSVC)
+  target_compile_options(test-labels PRIVATE /W4 /EHsc /utf-8)
+else()
+  target_compile_options(test-labels PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME labels COMMAND test-labels)

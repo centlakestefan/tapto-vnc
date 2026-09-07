@@ -9,9 +9,9 @@
 #include <string>
 #include <vector>
 
-#include "context.h"
-#include "tool_image.h"
-#include "tool_registry.h"
+#include "tapto/context.h"
+#include "tapto/tool_image.h"
+#include "tapto/tool_registry.h"
 
 namespace tapto {
 

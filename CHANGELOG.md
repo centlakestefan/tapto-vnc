@@ -39,6 +39,30 @@ carries everything else.
   OpenAI-compatible servers that copy the field. Claude's `--effort` is
   unchanged; the two are separate because the dialects spell it differently and
   accept different values. Same key, same resolution order, as tapto-code.
+- `connection-timeout` and `read-timeout` config keys (seconds; defaults 30
+  and 300). The reply is not streamed, so `read-timeout` bounds the whole
+  generation: raise it for a slow local model. Shared with tapto-code and
+  tapto-word.
+
+### Changed
+
+- The shared tapto code — the config store and secret resolver, and the three
+  provider clients with the agent loop — now comes from **libtapto**, vendored
+  in-tree under `libtapto/` as a byte-identical copy of the one in tapto-word
+  and tapto-code. This program's copies, which had drifted from tapto-code's,
+  are gone; the library carries the fixes from both sides. What changes here:
+  - Tool results with invalid UTF-8 are sanitized on every dialect, not only
+    Claude's, and the config store is written owner-only on Linux/macOS.
+  - Gemini's read timeout was a hardcoded 120 s; it is now the shared
+    `read-timeout` (default 300 s). Claude's 300 s is unchanged but configurable.
+  - The placeholder that replaces a pruned screenshot now reads "earlier image
+    omitted ... request a fresh one" rather than naming screenshots; the
+    library does not know what produced the image.
+  - The status-line labels (`Click left (412,300)`, `Zoom at (150,225)`, ...)
+    are attached to each tool rather than kept in a shared table, and a test
+    covers them, since a missing label shows the raw tool name and fails
+    nothing.
+  - The library's unit tests run under `ctest`.
 
 ### Fixed
 
