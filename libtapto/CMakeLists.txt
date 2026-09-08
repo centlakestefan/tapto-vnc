@@ -45,6 +45,62 @@ option(LIBTAPTO_STATIC_SSL "Link OpenSSL (and zlib) statically" OFF)
 if(LIBTAPTO_STATIC_SSL)
   set(OPENSSL_USE_STATIC_LIBS TRUE)
 endif()
+
+# On MSVC the usual install is Shining Light's "Win64 OpenSSL"
+# (C:/Program Files/OpenSSL-Win64), whose lib/VC/x64/<MD|MT>/ layout older
+# FindOpenSSL modules (CMake < 3.27) do not search, so it finds the headers and
+# then reports the libraries missing. Point it at them explicitly. Same as the
+# cpp-vnc project; the CI runner is where this matters.
+if(MSVC AND NOT LIB_EAY_RELEASE)
+  set(_ssl_roots "$ENV{OPENSSL_ROOT_DIR}" "$ENV{ProgramW6432}/OpenSSL-Win64"
+                 "$ENV{ProgramFiles}/OpenSSL-Win64" "C:/Program Files/OpenSSL-Win64" "C:/OpenSSL-Win64")
+  foreach(_root IN LISTS _ssl_roots)
+    if(_root AND EXISTS "${_root}/include/openssl/ssl.h")
+      file(GLOB _crypto "${_root}/lib/VC/x64/MD/libcrypto.lib" "${_root}/lib/VC/libcrypto64MD.lib"
+                        "${_root}/lib/libcrypto.lib")
+      file(GLOB _ssl    "${_root}/lib/VC/x64/MD/libssl.lib"    "${_root}/lib/VC/libssl64MD.lib"
+                        "${_root}/lib/libssl.lib")
+      if(_crypto AND _ssl)
+        list(GET _crypto 0 _crypto)
+        list(GET _ssl 0 _ssl)
+        set(OPENSSL_ROOT_DIR "${_root}" CACHE PATH "" FORCE)
+        set(OPENSSL_INCLUDE_DIR "${_root}/include" CACHE PATH "" FORCE)
+        # On MSVC FindOpenSSL derives OPENSSL_CRYPTO_LIBRARY from these
+        # per-configuration cache entries, so they are what must be set.
+        set(LIB_EAY_RELEASE "${_crypto}" CACHE FILEPATH "" FORCE)
+        set(LIB_EAY_DEBUG   "${_crypto}" CACHE FILEPATH "" FORCE)
+        set(SSL_EAY_RELEASE "${_ssl}"    CACHE FILEPATH "" FORCE)
+        set(SSL_EAY_DEBUG   "${_ssl}"    CACHE FILEPATH "" FORCE)
+        message(STATUS "Using OpenSSL from ${_root}")
+        break()
+      endif()
+    endif()
+  endforeach()
+endif()
+
+# Where there is no OpenSSL at all (a Windows build agent set up for MSVC and
+# nothing else), fetch a pinned prebuilt rather than fail: FireDaemon's
+# distribution, import libraries plus DLLs, the same one the signal project
+# fetches on the same agent. Gated on OpenSSL not being found, so a machine
+# that has one is untouched. The fetched DLLs need the Visual C++ runtime,
+# which the installer carries app-local.
+find_package(OpenSSL QUIET)
+if(NOT OpenSSL_FOUND AND WIN32 AND NOT LIBTAPTO_STATIC_SSL)
+  message(STATUS "OpenSSL not found on the system; fetching a pinned prebuilt (FireDaemon)")
+  # A short content name: FetchContent nests it several times in a sub-build
+  # path, which can hit MAX_PATH on a deep build directory.
+  FetchContent_Declare(ossl
+    URL      "https://download.firedaemon.com/FireDaemon-OpenSSL/openssl-3.5.4.zip"
+    URL_HASH SHA256=78d73d02ddd56514da45769bf0694871306b219099a756a45459fcaa3dfa35a6
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(ossl)
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(_ossl_arch x64)
+  else()
+    set(_ossl_arch x86)
+  endif()
+  set(OPENSSL_ROOT_DIR "${ossl_SOURCE_DIR}/${_ossl_arch}" CACHE PATH "" FORCE)
+endif()
 find_package(OpenSSL REQUIRED)
 
 if(NOT TARGET httplib::httplib)
@@ -154,4 +210,26 @@ if(LIBTAPTO_BUILD_TESTS)
     target_compile_options(test-libtapto PRIVATE -Wall -Wextra)
   endif()
   add_test(NAME libtapto COMMAND test-libtapto)
+  # Where OpenSSL is a pair of DLLs that nothing has put on PATH (the
+  # FireDaemon fetch above; a Shining Light install that skipped the PATH
+  # entry) the test dies at load time with STATUS_DLL_NOT_FOUND and no output.
+  # Their directory goes on the test's PATH. ENVIRONMENT_MODIFICATION is
+  # CMake 3.22; older ones run the test as before.
+  if(WIN32 AND OPENSSL_CRYPTO_LIBRARY AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
+    get_filename_component(_ssl_lib_dir "${OPENSSL_CRYPTO_LIBRARY}" DIRECTORY)
+    set(_ssl_bin_dirs "${_ssl_lib_dir}/../bin")
+    if(OPENSSL_ROOT_DIR)
+      file(TO_CMAKE_PATH "${OPENSSL_ROOT_DIR}" _ssl_root)
+      list(APPEND _ssl_bin_dirs "${_ssl_root}/bin")
+    endif()
+    foreach(_dir IN LISTS _ssl_bin_dirs)
+      if(IS_DIRECTORY "${_dir}")
+        get_filename_component(_dir "${_dir}" ABSOLUTE)
+        file(TO_NATIVE_PATH "${_dir}" _dir)
+        set_tests_properties(libtapto PROPERTIES
+          ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_dir}")
+        break()
+      endif()
+    endforeach()
+  endif()
 endif()

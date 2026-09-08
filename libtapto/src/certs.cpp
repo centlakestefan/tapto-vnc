@@ -162,11 +162,20 @@ bool add_ext(X509* cert, X509* issuer, int nid, const char* value) {
     return ok;
 }
 
-bool set_name(X509_NAME* name, const char* cn, const char* o) {
-    return X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                      reinterpret_cast<const unsigned char*>(cn), -1, -1, 0) == 1 &&
-           X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC,
-                                      reinterpret_cast<const unsigned char*>(o), -1, -1, 0) == 1;
+// The subject is built as its own object and copied in, rather than filled in
+// place through X509_get_subject_name(): from OpenSSL 4.0 that getter returns
+// a const pointer, and this form compiles against 3.x and 4.x alike.
+bool set_subject(X509* cert, const char* cn, const char* o) {
+    X509_NAME* name = X509_NAME_new();
+    if (!name) return false;
+    const bool ok =
+        X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                                   reinterpret_cast<const unsigned char*>(cn), -1, -1, 0) == 1 &&
+        X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC,
+                                   reinterpret_cast<const unsigned char*>(o), -1, -1, 0) == 1 &&
+        X509_set_subject_name(cert, name) == 1;
+    X509_NAME_free(name);
+    return ok;
 }
 
 Cert make_ca(EVP_PKEY* key, int days) {
@@ -176,7 +185,7 @@ Cert make_ca(EVP_PKEY* key, int days) {
     if (!random_serial(cert.get())) return nullptr;
     X509_gmtime_adj(X509_getm_notBefore(cert.get()), -60L * 60); // an hour ago, for clock skew
     X509_gmtime_adj(X509_getm_notAfter(cert.get()), 60L * 60 * 24 * days);
-    if (!set_name(X509_get_subject_name(cert.get()), "tapto local CA", "tapto")) return nullptr;
+    if (!set_subject(cert.get(), "tapto local CA", "tapto")) return nullptr;
     X509_set_issuer_name(cert.get(), X509_get_subject_name(cert.get()));
     X509_set_pubkey(cert.get(), key);
     if (!add_ext(cert.get(), cert.get(), NID_basic_constraints, "critical,CA:TRUE") ||
@@ -196,7 +205,7 @@ Cert make_leaf(EVP_PKEY* key, X509* ca, EVP_PKEY* ca_key, int days) {
     X509_gmtime_adj(X509_getm_notAfter(cert.get()), 60L * 60 * 24 * days);
     // The CN is decoration; hosts match on the SAN. 127.0.0.1 as an IP entry,
     // not a DNS name, or WebView2 rejects it.
-    if (!set_name(X509_get_subject_name(cert.get()), "localhost", "tapto")) return nullptr;
+    if (!set_subject(cert.get(), "localhost", "tapto")) return nullptr;
     X509_set_issuer_name(cert.get(), X509_get_subject_name(ca));
     X509_set_pubkey(cert.get(), key);
     if (!add_ext(cert.get(), ca, NID_basic_constraints, "CA:FALSE") ||
