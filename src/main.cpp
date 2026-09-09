@@ -32,6 +32,7 @@
 #include "tapto/log.h"
 #include "tapto/openai.h"
 #include "tapto/paths.h"
+#include "tapto/policy.h"
 #include "tapto/secret.h"
 #include "tapto/termui.h"
 #include "tapto/mcp_server.h"
@@ -99,7 +100,8 @@ ProviderDefaults defaultsFor(const std::string& dialect) {
 
 // The tapto-code config store (~/.tapto/config and friends), so an existing
 // tapto-code setup works here without re-entering the API key. Scopes are
-// merged with git-style precedence: local overrides global overrides system.
+// merged with git-style precedence: local overrides global overrides system,
+// and the organization's policy (tapto/policy.h) overrides all three.
 class Settings {
 public:
     Settings() {
@@ -112,6 +114,16 @@ public:
                 m_scopes.emplace_back();
             }
         }
+        tapto::Config policy;
+        for (const auto& entry : tapto::policy_entries()) policy.set(entry.first, entry.second);
+        m_scopes.push_back(std::move(policy));
+    }
+
+    // A key the organization's policy sets, which a command-line flag must
+    // not override either: the flag would otherwise be the one door a locked
+    // endpoint leaves open.
+    bool locked(const std::string& key) const {
+        return m_scopes.back().get(key).has_value();
     }
 
     std::optional<std::string> get(const std::string& key) const {
@@ -755,6 +767,13 @@ int main(int argc, char** argv) {
         settings.valueOr("provider", settings.valueOr("provider-type", "claude"));
     if (provider.empty()) provider = defaultProvider;
 
+    // A name the organization forbids is refused as such, whether or not it
+    // is configured.
+    if (const std::string why = tapto::provider_policy_refusal(provider); !why.empty()) {
+        std::cerr << "ERROR: " << why << "\n";
+        return 2;
+    }
+
     const bool isDialectName =
         provider == "claude" || provider == "openai" || provider == "gemini";
     const std::string dialect =
@@ -914,6 +933,21 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // A key locked by policy wins over the flag. Scoped first, then the
+    // unscoped one, which belongs to the default provider only.
+    auto enforce = [&](std::string& value, const char* flag, const std::string& key) {
+        std::string locked_key;
+        if (settings.locked(provider + "-" + key)) locked_key = provider + "-" + key;
+        else if (provider == defaultProvider && settings.locked(key)) locked_key = key;
+        if (locked_key.empty()) return;
+        const std::string mandated = settings.valueOr(locked_key, "");
+        if (!value.empty() && value != mandated) {
+            tapto::ui::print_warning(std::string(flag) + " ignored: '" + locked_key +
+                                     "' is set by your organization's policy");
+        }
+        value = mandated;
+    };
+    enforce(model, "--model", "model");
     if (model.empty())    model    = settings.valueOr(provider + "-model", "");
     if (model.empty() && provider == defaultProvider) model = settings.valueOr("model", "");
     if (model.empty())    model    = defaults.model;
@@ -947,6 +981,7 @@ int main(int argc, char** argv) {
     // same reason: a store holding a url and model for a local endpoint would
     // otherwise send them to a hosted provider, which fails in a way that looks
     // like a broken client rather than a config mix-up.
+    enforce(providerUrl, "--provider-url", "provider-url");
     if (providerUrl.empty()) providerUrl = settings.valueOr(provider + "-provider-url", "");
     if (providerUrl.empty() && provider == defaultProvider) {
         providerUrl = settings.valueOr("provider-url", "");

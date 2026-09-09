@@ -6,6 +6,7 @@
 #include <cstdlib>
 
 #include "tapto/config.h"
+#include "tapto/policy.h"
 #include "tapto/ui.h"
 
 namespace tapto {
@@ -122,9 +123,8 @@ Secret resolve_api_key(const std::string& name, const std::string& dialect) {
 std::vector<EffectiveEntry> effective_config() {
     std::vector<EffectiveEntry> merged;
 
-    auto apply = [&](Level level) {
-        Config cfg = Config::load(config_path(level));
-        for (const auto& entry : cfg.entries()) {
+    auto apply = [&](const std::vector<Config::Entry>& entries, Level level) {
+        for (const auto& entry : entries) {
             bool found = false;
             for (auto& existing : merged) {
                 if (existing.key == entry.first) {
@@ -138,9 +138,11 @@ std::vector<EffectiveEntry> effective_config() {
         }
     };
 
-    apply(Level::System);
-    apply(Level::Global);
-    apply(Level::Local);
+    apply(Config::load(config_path(Level::System)).entries(), Level::System);
+    apply(Config::load(config_path(Level::Global)).entries(), Level::Global);
+    apply(Config::load(config_path(Level::Local)).entries(), Level::Local);
+    // Last, so what the organization mandates overrides what the user wrote.
+    apply(policy_entries(), Level::Policy);
     return merged;
 }
 
@@ -163,6 +165,14 @@ std::optional<ResolvedProvider> resolve_provider(const std::string& requested) {
 
     ResolvedProvider p;
     p.name = requested.empty() ? def : requested;
+
+    // Before anything else: a name the organization forbids is refused as
+    // such, whether or not the user has configured it.
+    if (std::string why = provider_policy_refusal(p.name); !why.empty()) {
+        ui::print_error(why);
+        return std::nullopt;
+    }
+
     p.dialect = provider_dialect(p.name);
 
     if (p.dialect.empty()) {

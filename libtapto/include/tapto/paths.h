@@ -8,9 +8,14 @@
 namespace tapto {
 
 // Config scopes, ordered lowest to highest precedence.
-enum class Level { System, Global, Local };
+//
+// The first three are the user's: files the programs read and write. Policy
+// is the organization's and read-only: what an administrator mandates through
+// Group Policy (the registry, on Windows) or a root-owned file (elsewhere),
+// applied last so it overrides whatever the user wrote. See tapto/policy.h.
+enum class Level { System, Global, Local, Policy };
 
-// Human-readable name ("system" / "global" / "local").
+// Human-readable name ("system" / "global" / "local" / "policy").
 const char* level_name(Level level);
 
 // Resolve the config file path for a scope.
@@ -20,6 +25,10 @@ const char* level_name(Level level);
 // (~/.tapto/projects/<encoded-cwd>/config), NOT inside the project folder —
 // so a cloned repo can't ship config/commands and nothing is written into the
 // project tree. No upward search.
+//
+// Policy is a file only where there is no registry: /etc/tapto/policy. On
+// Windows it comes from the registry and this returns an empty path; use
+// policy_entries() from tapto/policy.h to read it on every platform.
 std::filesystem::path config_path(Level level);
 
 // Same resolution as config_path, but for the allow-listed commands store

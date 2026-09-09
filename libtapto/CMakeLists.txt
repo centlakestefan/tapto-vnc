@@ -127,6 +127,7 @@ add_library(tapto STATIC
   src/paths.cpp
   src/secret.cpp
   src/provider.cpp
+  src/policy.cpp
   src/encoding.cpp
   src/fstools.cpp
   src/certs.cpp

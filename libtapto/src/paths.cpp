@@ -79,8 +79,20 @@ fs::path store_path(Level level, const std::string& filename) {
         case Level::System: return system_store_path(filename);
         case Level::Global: return global_store_path(filename);
         case Level::Local:  return local_path(filename);
+        case Level::Policy: break;
     }
     return fs::path();
+}
+
+// The organization's policy file, on platforms without a registry. It sits
+// next to the system store but is a different file: the system store holds
+// defaults the user may override, this one holds what the user may not.
+fs::path policy_file_path() {
+#ifdef _WIN32
+    return fs::path(); // policy comes from the registry; see tapto/policy.h
+#else
+    return fs::path("/etc/tapto/policy");
+#endif
 }
 
 } // namespace
@@ -90,6 +102,7 @@ const char* level_name(Level level) {
         case Level::System: return "system";
         case Level::Global: return "global";
         case Level::Local:  return "local";
+        case Level::Policy: return "policy";
     }
     return "unknown";
 }
@@ -99,6 +112,7 @@ fs::path global_dir() {
 }
 
 fs::path config_path(Level level) {
+    if (level == Level::Policy) return policy_file_path();
     return store_path(level, "config");
 }
 

@@ -15,6 +15,13 @@
 #include <optional>
 #include <string>
 
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#endif
+
 #include <nlohmann/json.hpp>
 
 #include "tapto/aibackend.h"
@@ -24,6 +31,7 @@
 #include "tapto/context.h"
 #include "tapto/encoding.h"
 #include "tapto/fstools.h"
+#include "tapto/policy.h"
 #include "tapto/provider.h"
 #include "tapto/secret.h"
 #include "tapto/tool_image.h"
@@ -386,6 +394,134 @@ void test_compact_trimmer() {
     }
 }
 
+// --- policy -----------------------------------------------------------------
+
+std::optional<std::string> entry(const std::vector<tapto::Config::Entry>& entries, const std::string& key) {
+    for (const auto& e : entries) {
+        if (e.first == key) return e.second;
+    }
+    return std::nullopt;
+}
+
+void test_policy_file() {
+    fs::path path = scratch_file("policy");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "# managed\n"
+               "provider = work\n"
+               "work-provider-type = openai\n"
+               "work-provider-url = https://gateway.example/v1\n"
+               "work-api-key =\n"                 // empty: not a policy, dropped
+               "allowed-providers = work, review\n"
+               "provider = work2\n";              // last wins, as in the store
+    }
+    auto entries = tapto::policy_entries_from_file(path);
+    fs::remove(path);
+
+    CHECK_EQ(entry(entries, "provider").value_or(""), std::string("work2"));
+    CHECK_EQ(entry(entries, "work-provider-type").value_or(""), std::string("openai"));
+    CHECK(!entry(entries, "work-api-key").has_value());
+    CHECK_EQ(entry(entries, "allowed-providers").value_or(""), std::string("work, review"));
+    // A missing file is no policy.
+    CHECK(tapto::policy_entries_from_file(scratch_file("no-such-policy")).empty());
+    CHECK(tapto::policy_entries_from_file(fs::path()).empty());
+}
+
+void test_policy_provider_rules() {
+    using E = std::vector<tapto::Config::Entry>;
+
+    // No policy: everything goes.
+    CHECK_EQ(tapto::provider_policy_refusal("anything", E{}), std::string());
+
+    // An allow-list names the only acceptable providers.
+    E allow = {{"allowed-providers", "work, review"}};
+    CHECK_EQ(tapto::provider_policy_refusal("work", allow), std::string());
+    CHECK_EQ(tapto::provider_policy_refusal("review", allow), std::string());
+    std::string why = tapto::provider_policy_refusal("claude", allow);
+    CHECK(why.find("'claude'") != std::string::npos);
+    CHECK(why.find("work") != std::string::npos);
+
+    // allow-user-providers = 0: only what the policy configures.
+    E confined = {{"provider", "work"},
+                  {"work-provider-type", "openai"},
+                  {"review-provider-type", "claude"},
+                  {"allow-user-providers", "0"}};
+    CHECK_EQ(tapto::provider_policy_refusal("work", confined), std::string());
+    CHECK_EQ(tapto::provider_policy_refusal("review", confined), std::string());
+    why = tapto::provider_policy_refusal("personal", confined);
+    CHECK(why.find("'personal'") != std::string::npos);
+    CHECK(why.find("review") != std::string::npos);
+    // A bare dialect is a provider too, and is refused unless the policy names it.
+    CHECK(!tapto::provider_policy_refusal("claude", confined).empty());
+    E confined_default = {{"provider", "claude"}, {"allow-user-providers", "false"}};
+    CHECK_EQ(tapto::provider_policy_refusal("claude", confined_default), std::string());
+
+    // allow-user-providers = 1 is the default behaviour, spelled out.
+    E open = {{"provider", "work"}, {"allow-user-providers", "1"}};
+    CHECK_EQ(tapto::provider_policy_refusal("personal", open), std::string());
+
+    // The allow-list wins over the confinement when both are set.
+    E both = {{"allowed-providers", "personal"}, {"allow-user-providers", "0"}};
+    CHECK_EQ(tapto::provider_policy_refusal("personal", both), std::string());
+}
+
+#ifdef _WIN32
+// The registry reader, against a scratch key under HKCU\SOFTWARE (which a
+// standard user may write; HKCU\SOFTWARE\Policies itself may not be).
+void test_policy_registry() {
+    const std::wstring subkey = L"SOFTWARE\\Centlake\\libtapto-test-policy";
+    RegDeleteTreeW(HKEY_CURRENT_USER, subkey.c_str()); // a previous run that died
+
+    // Absent key: no policy, no error.
+    CHECK(tapto::policy_entries_from_registry(HKEY_CURRENT_USER, subkey).empty());
+
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, subkey.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &key,
+                        nullptr) != ERROR_SUCCESS) {
+        std::cerr << "test_policy_registry: cannot create scratch key, skipping\n";
+        return;
+    }
+    auto set_sz = [&](HKEY k, const wchar_t* name, const wchar_t* value) {
+        RegSetValueExW(k, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value),
+                       static_cast<DWORD>((wcslen(value) + 1) * sizeof(wchar_t)));
+    };
+    set_sz(key, L"provider", L"work");
+    set_sz(key, L"work-provider-type", L"openai");
+    set_sz(key, L"work-api-key", L"wincred:tapto/work");
+    set_sz(key, L"unset-by-policy", L"");
+    DWORD zero = 0, tokens = 32000;
+    RegSetValueExW(key, L"allow-user-providers", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&zero), sizeof(zero));
+    RegSetValueExW(key, L"max-output-tokens", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&tokens), sizeof(tokens));
+    const wchar_t multi[] = L"work\0review\0\0";
+    RegSetValueExW(key, L"allowed-providers", 0, REG_MULTI_SZ, reinterpret_cast<const BYTE*>(multi), sizeof(multi));
+    // An ADMX list element: a subkey with values named 1, 2, ... (10 sorts
+    // after 2 numerically, not before it).
+    HKEY list = nullptr;
+    RegCreateKeyExW(key, L"extra-list", 0, nullptr, 0, KEY_WRITE, nullptr, &list, nullptr);
+    set_sz(list, L"10", L"ten");
+    set_sz(list, L"2", L"two");
+    set_sz(list, L"1", L"one");
+    RegCloseKey(list);
+    RegCloseKey(key);
+
+    auto entries = tapto::policy_entries_from_registry(HKEY_CURRENT_USER, subkey);
+    RegDeleteTreeW(HKEY_CURRENT_USER, subkey.c_str());
+
+    CHECK_EQ(entry(entries, "provider").value_or(""), std::string("work"));
+    CHECK_EQ(entry(entries, "work-provider-type").value_or(""), std::string("openai"));
+    CHECK_EQ(entry(entries, "work-api-key").value_or(""), std::string("wincred:tapto/work"));
+    CHECK(!entry(entries, "unset-by-policy").has_value());
+    CHECK_EQ(entry(entries, "allow-user-providers").value_or(""), std::string("0"));
+    CHECK_EQ(entry(entries, "max-output-tokens").value_or(""), std::string("32000"));
+    CHECK_EQ(entry(entries, "allowed-providers").value_or(""), std::string("work, review"));
+    CHECK_EQ(entry(entries, "extra-list").value_or(""), std::string("one, two, ten"));
+
+    // And the rules read what the registry produced.
+    CHECK_EQ(tapto::provider_policy_refusal("review", entries), std::string());
+    CHECK(!tapto::provider_policy_refusal("claude", entries).empty());
+}
+#endif
+
 // --- provider helpers -------------------------------------------------------
 //
 // Only the pure one. default_provider_name(), provider_dialect() and
@@ -712,6 +848,11 @@ int main() {
     test_tool_display_name();
     test_compact_trimmer();
     test_api_key_env_var();
+    test_policy_file();
+    test_policy_provider_rules();
+#ifdef _WIN32
+    test_policy_registry();
+#endif
     test_tool_definition_formats();
     test_fs_helpers();
     test_folder_set_grants();

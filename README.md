@@ -243,6 +243,17 @@ An older store using `provider-type = claude` with `claude-api-key` keeps
 working: `provider-type` is read as the default provider's name when `provider`
 is absent.
 
+### Organization policy
+
+An administrator can fix any of these keys for every user through Group Policy,
+and confine which providers may be used. Policy is read from
+`HKLM`/`HKCU\SOFTWARE\Policies\Centlake\tapto` on Windows (the `tapto.admx`
+template ships in the tapto-code repository) and from `/etc/tapto/policy`
+elsewhere. A key set there overrides every user scope, and `--model` or
+`--provider-url` cannot override it either; `allowed-providers` and
+`allow-user-providers` restrict `--provider`. The full description is in the
+tapto-code README under *Enterprise policy*.
+
 ### Keeping secrets out of the config file
 
 A secret may say **where** it lives instead of holding it:
