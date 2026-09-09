@@ -126,6 +126,16 @@ public:
         return m_scopes.back().get(key).has_value();
     }
 
+    // The scope the effective value of `key` comes from, or none when unset.
+    std::optional<tapto::Level> origin(const std::string& key) const {
+        static const tapto::Level kLevels[] = {tapto::Level::System, tapto::Level::Global,
+                                               tapto::Level::Local, tapto::Level::Policy};
+        for (size_t i = m_scopes.size(); i-- > 0;) {
+            if (auto value = m_scopes[i].get(key); value && !value->empty()) return kLevels[i];
+        }
+        return std::nullopt;
+    }
+
     std::optional<std::string> get(const std::string& key) const {
         for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
             if (auto value = it->get(key)) {
@@ -982,9 +992,32 @@ int main(int argc, char** argv) {
     // otherwise send them to a hosted provider, which fails in a way that looks
     // like a broken client rather than a config mix-up.
     enforce(providerUrl, "--provider-url", "provider-url");
-    if (providerUrl.empty()) providerUrl = settings.valueOr(provider + "-provider-url", "");
+    // A confined user may not redirect a permitted block either, from the flag
+    // or from a scope of their own: with either provider restriction set, the
+    // endpoint is the policy's or the vendor's default. The library's
+    // resolve_provider applies the same rule; this program resolves by itself.
+    if (!providerUrl.empty() &&
+        !tapto::provider_url_policy_refusal("--provider-url", tapto::Level::Local).empty()) {
+        std::cerr << "ERROR: --provider-url is not allowed: your organization's policy confines "
+                     "providers to its own, and their endpoints can only be set by policy\n";
+        return 2;
+    }
+    std::string urlKey;
+    if (providerUrl.empty()) {
+        urlKey = provider + "-provider-url";
+        providerUrl = settings.valueOr(urlKey, "");
+    }
     if (providerUrl.empty() && provider == defaultProvider) {
-        providerUrl = settings.valueOr("provider-url", "");
+        urlKey = "provider-url";
+        providerUrl = settings.valueOr(urlKey, "");
+    }
+    if (!providerUrl.empty() && !urlKey.empty()) {
+        if (auto from = settings.origin(urlKey)) {
+            if (const std::string why = tapto::provider_url_policy_refusal(urlKey, *from); !why.empty()) {
+                std::cerr << "ERROR: " << why << "\n";
+                return 2;
+            }
+        }
     }
     if (providerUrl.empty()) providerUrl = defaults.host;
     const std::string host = providerUrl;

@@ -84,14 +84,15 @@ fs::path store_path(Level level, const std::string& filename) {
     return fs::path();
 }
 
-// The organization's policy file, on platforms without a registry. It sits
-// next to the system store but is a different file: the system store holds
-// defaults the user may override, this one holds what the user may not.
-fs::path policy_file_path() {
+// The organization's policy files, on platforms without a registry. They sit
+// next to the system store but are different files: the system store holds
+// defaults the user may override, these hold what the user may not.
+fs::path policy_file_path(const char* filename) {
 #ifdef _WIN32
+    (void)filename;
     return fs::path(); // policy comes from the registry; see tapto/policy.h
 #else
-    return fs::path("/etc/tapto/policy");
+    return fs::path("/etc/tapto") / filename;
 #endif
 }
 
@@ -112,11 +113,12 @@ fs::path global_dir() {
 }
 
 fs::path config_path(Level level) {
-    if (level == Level::Policy) return policy_file_path();
+    if (level == Level::Policy) return policy_file_path("policy");
     return store_path(level, "config");
 }
 
 fs::path commands_path(Level level) {
+    if (level == Level::Policy) return policy_file_path("policy-commands");
     return store_path(level, "commands");
 }
 

@@ -32,7 +32,8 @@ const char* level_name(Level level);
 std::filesystem::path config_path(Level level);
 
 // Same resolution as config_path, but for the allow-listed commands store
-// (".tapto/commands").
+// (".tapto/commands"). Policy: /etc/tapto/policy-commands, or empty on Windows
+// where the list is the registry's `commands` subkey (policy_commands()).
 std::filesystem::path commands_path(Level level);
 
 // The per-user tapto directory (~/.tapto), home of the global store and of

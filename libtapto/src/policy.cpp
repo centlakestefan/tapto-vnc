@@ -103,6 +103,11 @@ std::vector<std::string> policy_defined_providers(const std::vector<Config::Entr
 
 const wchar_t kPolicySubkey[] = L"SOFTWARE\\Policies\\Centlake\\tapto";
 
+// Subkeys of the policy key that are stores of their own (see the header):
+// free-form settings read as keys of the parent, and the command allow-list.
+const wchar_t kSettingsSubkey[] = L"settings";
+const wchar_t kCommandsSubkey[] = L"commands";
+
 std::string narrow(const wchar_t* s, int len) {
     if (len <= 0) return std::string();
     int n = WideCharToMultiByte(CP_UTF8, 0, s, len, nullptr, 0, nullptr, nullptr);
@@ -181,8 +186,12 @@ std::vector<Config::Entry> read_values(HKEY key) {
             ERROR_SUCCESS) {
             continue;
         }
-        out.emplace_back(narrow(name.data(), static_cast<int>(name_len)),
-                         value_text(type, data.data(), data_len));
+        std::string value_name = narrow(name.data(), static_cast<int>(name_len));
+        // `**delvals.` is the marker the Group Policy client writes into a key
+        // it manages when applying a list element. It is never a setting, and
+        // left in it would spoil the numeric ordering of a list's items.
+        if (value_name.compare(0, 2, "**") == 0) continue;
+        out.emplace_back(std::move(value_name), value_text(type, data.data(), data_len));
     }
     return out;
 }
@@ -191,6 +200,10 @@ std::vector<Config::Entry> read_values(HKEY key) {
 // 1, 2, 3, ... (or the items' own names, for a list with explicit names).
 // Either way the subkey's name is the config key and its values, in numeric
 // order where the names are numbers, are the comma-separated list.
+//
+// Two subkeys are not lists: `settings` holds config keys of its own, which
+// are read as if they sat in the parent key, and `commands` is the command
+// allow-list, read by policy_commands_from_registry().
 void read_list_subkeys(HKEY key, std::vector<Config::Entry>& out) {
     DWORD count = 0, max_name = 0;
     if (RegQueryInfoKeyW(key, nullptr, nullptr, nullptr, &count, &max_name, nullptr, nullptr, nullptr,
@@ -203,10 +216,19 @@ void read_list_subkeys(HKEY key, std::vector<Config::Entry>& out) {
         if (RegEnumKeyExW(key, i, &name[0], &name_len, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) {
             continue;
         }
+        const std::string sub_name = narrow(name.data(), static_cast<int>(name_len));
+        const std::string kind = lower(sub_name); // registry key names are case-insensitive
+        if (kind == narrow(kCommandsSubkey)) continue;
+
         HKEY sub = nullptr;
         if (RegOpenKeyExW(key, name.c_str(), 0, KEY_READ, &sub) != ERROR_SUCCESS) continue;
         std::vector<Config::Entry> items = read_values(sub);
         RegCloseKey(sub);
+
+        if (kind == narrow(kSettingsSubkey)) {
+            for (const auto& item : items) put(out, item.first, item.second);
+            continue;
+        }
 
         auto numeric = [](const std::string& s) {
             return !s.empty() &&
@@ -225,7 +247,7 @@ void read_list_subkeys(HKEY key, std::vector<Config::Entry>& out) {
             if (!joined.empty()) joined += ", ";
             joined += v;
         }
-        put(out, narrow(name.data(), static_cast<int>(name_len)), joined);
+        put(out, sub_name, joined);
     }
 }
 
@@ -259,11 +281,29 @@ std::vector<Config::Entry> policy_entries_from_registry(HKEY__* root, const std:
     return out;
 }
 
+std::vector<Config::Entry> policy_commands_from_registry(HKEY__* root, const std::wstring& subkey) {
+    std::vector<Config::Entry> out;
+    HKEY key = nullptr;
+    const std::wstring path = subkey + L"\\" + kCommandsSubkey;
+    if (RegOpenKeyExW(root, path.c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS) return out;
+    for (const auto& e : read_values(key)) put(out, e.first, e.second);
+    RegCloseKey(key);
+    return out;
+}
+
 std::vector<Config::Entry> policy_entries() {
     // User policy first, machine policy over it: an administrator who sets a
     // key for the whole machine means it for every account on it.
     std::vector<Config::Entry> out = policy_entries_from_registry(HKEY_CURRENT_USER, kPolicySubkey);
     for (const auto& e : policy_entries_from_registry(HKEY_LOCAL_MACHINE, kPolicySubkey)) {
+        put(out, e.first, e.second);
+    }
+    return out;
+}
+
+std::vector<Config::Entry> policy_commands() {
+    std::vector<Config::Entry> out = policy_commands_from_registry(HKEY_CURRENT_USER, kPolicySubkey);
+    for (const auto& e : policy_commands_from_registry(HKEY_LOCAL_MACHINE, kPolicySubkey)) {
         put(out, e.first, e.second);
     }
     return out;
@@ -279,14 +319,34 @@ std::vector<Config::Entry> policy_entries() {
     return policy_entries_from_file(config_path(Level::Policy));
 }
 
+std::vector<Config::Entry> policy_commands() {
+    return policy_entries_from_file(commands_path(Level::Policy));
+}
+
 std::string policy_source() {
     return config_path(Level::Policy).string();
 }
 
 #endif
 
+// Whether either restriction confines the user's choice of provider.
+bool policy_confines_providers(const std::vector<Config::Entry>& policy) {
+    if (auto allowed = find(policy, "allowed-providers"); allowed && !split_list(*allowed).empty()) return true;
+    auto v = find(policy, "allow-user-providers");
+    return v && is_false(*v);
+}
+
 bool is_policy_managed(const std::string& key) {
     return find(policy_entries(), key).has_value();
+}
+
+bool policy_allows_user_commands() {
+    return policy_allows_user_commands(policy_entries());
+}
+
+bool policy_allows_user_commands(const std::vector<Config::Entry>& policy) {
+    auto v = find(policy, "allow-user-commands");
+    return !(v && is_false(*v));
 }
 
 std::string provider_policy_refusal(const std::string& name) {
@@ -321,6 +381,19 @@ std::string provider_policy_refusal(const std::string& name, const std::vector<C
     }
 
     return "";
+}
+
+std::string provider_url_policy_refusal(const std::string& key, Level origin) {
+    return provider_url_policy_refusal(key, origin, policy_entries());
+}
+
+std::string provider_url_policy_refusal(const std::string& key, Level origin,
+                                        const std::vector<Config::Entry>& policy) {
+    if (origin == Level::Policy || !policy_confines_providers(policy)) return "";
+    return "'" + key + "' is set in your " + level_name(origin) +
+           " config, but your organization's policy confines providers to its own; "
+           "their endpoints can only be set by policy. Remove the key, or ask your "
+           "administrator to set it";
 }
 
 } // namespace tapto

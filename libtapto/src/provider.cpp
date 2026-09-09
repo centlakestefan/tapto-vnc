@@ -204,6 +204,23 @@ std::optional<ResolvedProvider> resolve_provider(const std::string& requested) {
         return std::nullopt;
     };
 
+    // A confined user must not redirect a permitted block either. The entry
+    // the URL comes from is found the way scoped() finds it, origin included.
+    {
+        std::optional<EffectiveEntry> url;
+        for (const auto& e : effective_config()) {
+            if (e.value.empty()) continue;
+            if (e.key == p.name + "-provider-url") { url = e; break; }
+            if (is_default && e.key == "provider-url" && !url) url = e;
+        }
+        if (url) {
+            if (std::string why = provider_url_policy_refusal(url->key, url->origin); !why.empty()) {
+                ui::print_error(why);
+                return std::nullopt;
+            }
+        }
+    }
+
     p.url = scoped("provider-url").value_or(default_url(p.dialect));
     p.model = scoped("model").value_or(default_model(p.dialect));
     p.reasoning_effort = scoped("reasoning-effort").value_or("");

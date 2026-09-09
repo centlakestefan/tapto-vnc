@@ -463,6 +463,32 @@ void test_policy_provider_rules() {
     // The allow-list wins over the confinement when both are set.
     E both = {{"allowed-providers", "personal"}, {"allow-user-providers", "0"}};
     CHECK_EQ(tapto::provider_policy_refusal("personal", both), std::string());
+
+    // A confined user may not point a permitted block elsewhere: the URL must
+    // be policy's (or the vendor default), whichever key does the confining.
+    using tapto::Level;
+    CHECK_EQ(tapto::provider_url_policy_refusal("work-provider-url", Level::Local, E{}), std::string());
+    CHECK_EQ(tapto::provider_url_policy_refusal("work-provider-url", Level::Local, open), std::string());
+    CHECK_EQ(tapto::provider_url_policy_refusal("work-provider-url", Level::Policy, confined), std::string());
+    why = tapto::provider_url_policy_refusal("work-provider-url", Level::Local, confined);
+    CHECK(why.find("'work-provider-url'") != std::string::npos);
+    CHECK(why.find("local") != std::string::npos);
+    CHECK(!tapto::provider_url_policy_refusal("provider-url", Level::Global, allow).empty());
+    // An empty allow-list confines nothing, as in provider_policy_refusal.
+    CHECK_EQ(tapto::provider_url_policy_refusal("provider-url", Level::Global, E{{"allowed-providers", " , "}}),
+             std::string());
+}
+
+void test_policy_command_rules() {
+    using E = std::vector<tapto::Config::Entry>;
+    // Unset, or anything but a false: the user's own commands count.
+    CHECK(tapto::policy_allows_user_commands(E{}));
+    CHECK(tapto::policy_allows_user_commands(E{{"allow-user-commands", "1"}}));
+    CHECK(tapto::policy_allows_user_commands(E{{"allow-user-commands", "yes"}}));
+    // The DWORD a policy writes, and the words a file may use.
+    CHECK(!tapto::policy_allows_user_commands(E{{"allow-user-commands", "0"}}));
+    CHECK(!tapto::policy_allows_user_commands(E{{"allow-user-commands", "false"}}));
+    CHECK(!tapto::policy_allows_user_commands(E{{"allow-user-commands", "No"}}));
 }
 
 #ifdef _WIN32
@@ -489,22 +515,45 @@ void test_policy_registry() {
     set_sz(key, L"work-provider-type", L"openai");
     set_sz(key, L"work-api-key", L"wincred:tapto/work");
     set_sz(key, L"unset-by-policy", L"");
+    // The marker the Group Policy client leaves in a key it manages.
+    set_sz(key, L"**delvals.", L" ");
     DWORD zero = 0, tokens = 32000;
     RegSetValueExW(key, L"allow-user-providers", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&zero), sizeof(zero));
+    RegSetValueExW(key, L"allow-user-commands", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&zero), sizeof(zero));
     RegSetValueExW(key, L"max-output-tokens", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&tokens), sizeof(tokens));
     const wchar_t multi[] = L"work\0review\0\0";
     RegSetValueExW(key, L"allowed-providers", 0, REG_MULTI_SZ, reinterpret_cast<const BYTE*>(multi), sizeof(multi));
     // An ADMX list element: a subkey with values named 1, 2, ... (10 sorts
-    // after 2 numerically, not before it).
+    // after 2 numerically, not before it), plus the client's marker, which
+    // must not turn the names non-numeric.
     HKEY list = nullptr;
     RegCreateKeyExW(key, L"extra-list", 0, nullptr, 0, KEY_WRITE, nullptr, &list, nullptr);
     set_sz(list, L"10", L"ten");
     set_sz(list, L"2", L"two");
     set_sz(list, L"1", L"one");
+    set_sz(list, L"**delvals.", L" ");
     RegCloseKey(list);
+    // The "settings" subkey: the template's free-form list, whose values are
+    // config keys of the parent.
+    HKEY settings = nullptr;
+    RegCreateKeyExW(key, L"Settings", 0, nullptr, 0, KEY_WRITE, nullptr, &settings, nullptr);
+    set_sz(settings, L"trace-file", L"C:\\logs\\tapto.log");
+    set_sz(settings, L"review-provider-type", L"claude");
+    set_sz(settings, L"**delvals.", L" ");
+    RegCloseKey(settings);
+    // The "commands" subkey: the organization's command allow-list, not a key.
+    HKEY commands = nullptr;
+    RegCreateKeyExW(key, L"commands", 0, nullptr, 0, KEY_WRITE, nullptr, &commands, nullptr);
+    set_sz(commands, L"build", L"cmake --build build --config Debug");
+    set_sz(commands, L"test", L"ctest --test-dir build");
+    set_sz(commands, L"**delvals.", L" ");
+    RegCloseKey(commands);
     RegCloseKey(key);
 
     auto entries = tapto::policy_entries_from_registry(HKEY_CURRENT_USER, subkey);
+    auto cmds = tapto::policy_commands_from_registry(HKEY_CURRENT_USER, subkey);
+    // A key without the subkey: no commands, no error.
+    auto no_cmds = tapto::policy_commands_from_registry(HKEY_CURRENT_USER, subkey + L"\\extra-list");
     RegDeleteTreeW(HKEY_CURRENT_USER, subkey.c_str());
 
     CHECK_EQ(entry(entries, "provider").value_or(""), std::string("work"));
@@ -515,10 +564,23 @@ void test_policy_registry() {
     CHECK_EQ(entry(entries, "max-output-tokens").value_or(""), std::string("32000"));
     CHECK_EQ(entry(entries, "allowed-providers").value_or(""), std::string("work, review"));
     CHECK_EQ(entry(entries, "extra-list").value_or(""), std::string("one, two, ten"));
+    CHECK(!entry(entries, "**delvals.").has_value());
+    // Flattened from the settings subkey; the subkeys themselves are not keys.
+    CHECK_EQ(entry(entries, "trace-file").value_or(""), std::string("C:\\logs\\tapto.log"));
+    CHECK_EQ(entry(entries, "review-provider-type").value_or(""), std::string("claude"));
+    CHECK(!entry(entries, "Settings").has_value());
+    CHECK(!entry(entries, "settings").has_value());
+    CHECK(!entry(entries, "commands").has_value());
+
+    CHECK_EQ(cmds.size(), size_t{2});
+    CHECK_EQ(entry(cmds, "build").value_or(""), std::string("cmake --build build --config Debug"));
+    CHECK_EQ(entry(cmds, "test").value_or(""), std::string("ctest --test-dir build"));
+    CHECK(no_cmds.empty());
 
     // And the rules read what the registry produced.
     CHECK_EQ(tapto::provider_policy_refusal("review", entries), std::string());
     CHECK(!tapto::provider_policy_refusal("claude", entries).empty());
+    CHECK(!tapto::policy_allows_user_commands(entries));
 }
 #endif
 
@@ -850,6 +912,7 @@ int main() {
     test_api_key_env_var();
     test_policy_file();
     test_policy_provider_rules();
+    test_policy_command_rules();
 #ifdef _WIN32
     test_policy_registry();
 #endif

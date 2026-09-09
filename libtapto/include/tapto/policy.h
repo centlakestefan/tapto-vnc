@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "tapto/config.h"
+#include "tapto/paths.h" // Level
 
 // ---------------------------------------------------------------------------
 // Organization policy: config an administrator mandates, which the user
@@ -40,6 +41,23 @@
 // comma-separated value. An empty value is not a policy: it is dropped, and
 // the user's own value stands.
 //
+// Two subkeys are stores of their own rather than config keys:
+//
+//   ...\tapto\settings   free-form `key = value` pairs, read as if they were
+//                        values of the parent key. The template's "Additional
+//                        settings" list writes here and not into the parent,
+//                        because Group Policy clears a list's key before it
+//                        rewrites the list and would take every other setting
+//                        in the key with it.
+//   ...\tapto\commands   the organization's allow-listed commands, name =
+//                        command line: the shape of the user's commands store
+//                        (tapto/commands.h). Elsewhere it is the file
+//                        /etc/tapto/policy-commands.
+//
+// A value named `**delvals.` (or anything else starting with `**`) is a marker
+// the Group Policy client leaves in a key it manages, never a setting; the
+// readers skip it.
+//
 // A policy must not carry an API key: Group Policy objects are readable by
 // every account in the domain. It carries a reference (`wincred:tapto/work`,
 // `env:`, `cmd:`; see tapto/secret.h) and the credential travels separately,
@@ -53,7 +71,22 @@
 //                                       (`<name>-provider-type` set by policy,
 //                                       or the policy's own `provider`)
 //
-// Neither set means any configured provider is fine, as before.
+// Neither set means any configured provider is fine, as before. Either set
+// also fixes where a permitted block points: its `-provider-url` may come from
+// policy or be the vendor's default, never from a user scope, since a user who
+// could redirect the block would have a personal endpoint after all. The
+// template requires the URL for that reason; this rule covers policies written
+// another way.
+//
+// One more confines the command allow-list the same way:
+//
+//   allow-user-commands = 0             only the commands the policy defines
+//                                       (its `commands` store) can be run or
+//                                       listed; the user's own stores are
+//                                       ignored and `command add` is refused
+//
+// Policy commands are merged above the user's whether or not that key is set,
+// so a name the policy defines cannot be redefined in a user scope.
 // ---------------------------------------------------------------------------
 
 struct HKEY__; // <windows.h> is not dragged into every consumer for one handle
@@ -65,6 +98,10 @@ namespace tapto {
 // Empty values are already dropped. First-seen key order.
 std::vector<Config::Entry> policy_entries();
 
+// The organization's allow-listed commands, (name, command line), merged the
+// same way. Empty when the policy defines none.
+std::vector<Config::Entry> policy_commands();
+
 // Where the policy is read from, for messages: the registry key or file path.
 std::string policy_source();
 
@@ -72,24 +109,41 @@ std::string policy_source();
 // changed. (`config set` refuses; setup does not prompt for it.)
 bool is_policy_managed(const std::string& key);
 
+// False when policy sets `allow-user-commands` to 0/false: the user's own
+// command stores are ignored and `command add` is refused.
+bool policy_allows_user_commands();
+bool policy_allows_user_commands(const std::vector<Config::Entry>& policy);
+
 // Why policy forbids using the provider `name`, or "" when it is allowed.
 // Applies `allowed-providers` and `allow-user-providers` (see above).
 std::string provider_policy_refusal(const std::string& name);
 std::string provider_policy_refusal(const std::string& name,
                                     const std::vector<Config::Entry>& policy);
 
+// Why policy forbids the effective `<name>-provider-url` (or `provider-url`)
+// entry `key`, set at `origin`, or "" when it is fine: with providers confined
+// by either key above, an endpoint from a user scope is refused.
+std::string provider_url_policy_refusal(const std::string& key, Level origin);
+std::string provider_url_policy_refusal(const std::string& key, Level origin,
+                                        const std::vector<Config::Entry>& policy);
+
 // --- The readers, one per source ---------------------------------------------
 // Public so the library test can exercise them against a scratch file and a
 // scratch registry key without administrator rights; the programs call
 // policy_entries().
 
-// Parse a policy file (the config store's `key = value` format).
+// Parse a policy file (the config store's `key = value` format). A policy
+// commands file has the same shape and is read with the same call.
 std::vector<Config::Entry> policy_entries_from_file(const std::filesystem::path& path);
 
 #ifdef _WIN32
 // Read `subkey` under `root` (HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER, ...) as
 // described above. Missing key: empty.
 std::vector<Config::Entry> policy_entries_from_registry(HKEY__* root, const std::wstring& subkey);
+
+// Read the `commands` subkey of `subkey` under `root` as (name, command line).
+// Missing key: empty.
+std::vector<Config::Entry> policy_commands_from_registry(HKEY__* root, const std::wstring& subkey);
 
 // The subkey Group Policy writes: SOFTWARE\Policies\Centlake\tapto.
 const wchar_t* policy_registry_subkey();
