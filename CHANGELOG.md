@@ -20,10 +20,17 @@ invalidates every prompt, transcript and measurement taken before it, in a way
 no compiler will report.
 
 Versions are [Semantic Versioning](https://semver.org/) against that surface.
-Before 1.0.0 the minor number carries breaking changes, and the patch number
-carries everything else.
+From 1.0.0 the major number carries breaking changes, the minor number new
+features, and the patch number fixes. (Before 1.0.0 the minor number carried
+breaking changes and the patch number everything else.)
 
 ## [Unreleased]
+
+## [1.0.0] — 2026-09-14
+
+The first stable release. The flags, config keys and tool schema described
+above are now the contract: a change to them is a new major version. The
+config store is shared with tapto-code, which reaches 1.0.0 the same day.
 
 ### Added
 
@@ -275,7 +282,8 @@ screenshots as tools. ([3d11be9])
 - `NOMINMAX` for Windows builds, where `<windows.h>` breaks `std::min` and
   `std::max` in the vendored RFB sources under MSVC. ([f069d78])
 
-[Unreleased]: https://github.com/centlakestefan/tapto-vnc/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/centlakestefan/tapto-vnc/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/centlakestefan/tapto-vnc/releases/tag/v0.1.0
