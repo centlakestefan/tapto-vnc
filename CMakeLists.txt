@@ -56,6 +56,11 @@ FetchContent_Declare(zlib
 )
 # Its example programs would otherwise register as tests of ours.
 set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+# And its install rules would put its headers, import libraries and DLL into
+# any tree that installs this project (the Windows installer packages exactly
+# that tree), with absolute destinations CPack refuses outright. zlib is
+# linked statically and private to us; nothing of it is installed.
+set(SKIP_INSTALL_ALL ON)
 FetchContent_MakeAvailable(zlib)
 
 # Provide compatibility alias for existing ZLIB::ZLIB usage
