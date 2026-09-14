@@ -36,9 +36,13 @@ add_custom_target(tapto_version ALL
 )
 
 # --- Dependencies -----------------------------------------------------------
-# OpenSSL: DES for VNC authentication, TLS for wss:// transport.
+# OpenSSL: DES for VNC authentication, TLS for wss:// transport. Found below,
+#          after libtapto: the library locates it (Shining Light's MSVC layout
+#          included) or, on a Windows host with none at all, fetches a pinned
+#          prebuilt, and leaves OPENSSL_ROOT_DIR in the cache for the find
+#          here. A find_package before the library would fail on such a host
+#          before the library got its chance.
 # zlib:    ZRLE encoding.
-find_package(OpenSSL REQUIRED)
 
 # Fetched at configure time, pinned to the same tags tapto-code uses so the
 # two projects stay on one version of each dependency.
@@ -79,6 +83,12 @@ endif()
 # Its unit tests run under ctest with ours.
 set(LIBTAPTO_BUILD_TESTS ON CACHE BOOL "" FORCE)
 add_subdirectory(libtapto)
+
+# OpenSSL for this directory's own targets (tapto_rfb). Imported targets are
+# scoped to the directory that created them, so the library's OpenSSL::SSL is
+# not visible here; the package is found again, from the cache entries the
+# library left behind.
+find_package(OpenSSL REQUIRED)
 
 # --- Windows defines --------------------------------------------------------
 # <windows.h>, pulled in by <winsock2.h>, defines min and max as macros, which
