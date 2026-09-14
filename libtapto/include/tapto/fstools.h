@@ -125,6 +125,21 @@ std::vector<std::string> content_lines(const std::string& content);
 // program reads produces.
 bool looks_binary(const std::string& content);
 
+// One line a content search matched, with its 1-based line number.
+struct LineMatch { int line; std::string text; };
+
+// Stream `path` line by line and return the lines containing `query`, at most
+// `max_lines` of them. Unlike read_file + split_lines it never holds the whole
+// file in memory, so it reaches files far larger than the context window (a
+// content grep that loaded the file first would have to skip big files, which
+// is why the old search tools capped each file at a few MB). Lines split on
+// '\n' with a trailing '\r' stripped, the same contract split_lines gives. A
+// NUL in the first 8 KiB marks the file binary and returns no matches; an
+// unreadable file does the same.
+std::vector<LineMatch> find_matching_lines(const std::filesystem::path& path,
+                                           const std::string& query,
+                                           std::size_t max_lines);
+
 // Truncate at `max_bytes` with a marker, so one huge result cannot fill the
 // context window on its own.
 std::string cap_output(std::string text, std::size_t max_bytes = 64000);

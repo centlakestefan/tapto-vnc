@@ -94,6 +94,44 @@ std::string cap_output(std::string text, std::size_t max_bytes) {
     return text;
 }
 
+std::vector<LineMatch> find_matching_lines(const fs::path& path,
+                                           const std::string& query,
+                                           std::size_t max_lines) {
+    std::vector<LineMatch> out;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return out;
+
+    // Binary probe: a NUL in the first 8 KiB marks the file as binary (the
+    // same first-8KiB window looks_binary uses, but without holding the file).
+    char probe[8192];
+    in.read(probe, sizeof(probe));
+    const std::streamsize got = in.gcount();
+    for (std::streamsize i = 0; i < got; ++i)
+        if (static_cast<unsigned char>(probe[i]) == 0) return out; // binary
+    in.clear();
+    in.seekg(0, std::ios::beg);
+
+    int lineno = 0;
+    std::string line;
+    for (;;) {
+        if (out.size() >= max_lines) break;             // enough matches already
+        if (!std::getline(in, line)) {
+            if (!in.eof() && in.bad()) break;            // real error: stop
+            if (line.empty()) break;                    // clean EOF, nothing left
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            ++lineno;                                    // final line, no newline
+            if (line.find(query) != std::string::npos && out.size() < max_lines)
+                out.push_back({lineno, line});
+            break;
+        }
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        ++lineno;
+        if (line.find(query) != std::string::npos && out.size() < max_lines)
+            out.push_back({lineno, line});
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // FolderSet
 // ---------------------------------------------------------------------------
@@ -452,7 +490,6 @@ std::string tool_search_files(const FolderSet& folders, const json& in) {
     const std::string pattern = str_arg(in, "pattern", "*");
 
     constexpr size_t kMaxFiles = 100;
-    constexpr size_t kMaxFileBytes = 5 * 1024 * 1024;
     constexpr size_t kMaxLinesPerFile = 20;
 
     struct Match {
@@ -475,21 +512,16 @@ std::string tool_search_files(const FolderSet& folders, const json& in) {
         if (!it->is_regular_file(ec)) continue;
         if (!wildcard_match(pattern, p.filename().string())) continue;
 
-        std::error_code sz_ec;
-        const auto size = fs::file_size(p, sz_ec);
-        if (sz_ec || size > kMaxFileBytes) continue;
-        std::string content;
-        if (!read_file(p, content) || looks_binary(content)) continue;
+        // Stream (find_matching_lines) so files larger than the old 5 MiB cap
+        // are still searched; the helper bails out on binaries and unreadable
+        // files, so no whole-file read or size check is needed here.
+        auto lines = find_matching_lines(p, query, kMaxLinesPerFile);
+        if (lines.empty()) continue;
 
-        Match m;
-        const auto lines = split_lines(content);
-        for (size_t i = 0; i < lines.size(); ++i) {
-            if (lines[i].find(query) == std::string::npos) continue;
-            if (m.lines.size() < kMaxLinesPerFile) m.lines.emplace_back(static_cast<int>(i + 1), lines[i]);
-        }
-        if (m.lines.empty()) continue;
         if (results.size() >= kMaxFiles) { more = true; break; }
+        Match m;
         m.path = folders.display(p);
+        for (const auto& lm : lines) m.lines.emplace_back(lm.line, std::move(lm.text));
         results.push_back(std::move(m));
     }
 

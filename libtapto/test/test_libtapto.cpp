@@ -793,6 +793,21 @@ void test_folder_tools() {
     CHECK(contains(run(tools, "search_files", json{{"query", "absent-string"}}), "No files"));
     CHECK(starts_with(run(tools, "search_files", json{{"query", ""}}), "ERROR:"));
 
+    // search_files: a file far larger than the old 5 MiB cap is still searched.
+    // The fix streams line-by-line instead of skipping big files, so a needle
+    // near the end of a multi-GB log is reachable.
+    {
+        std::string big;
+        big.reserve(6 * 1024 * 1024);
+        for (int i = 0; i < 60000; ++i)
+            big += "filler line " + std::to_string(i) + "\n";
+        big += "big-file-needle at the end\n";
+        Tree::write(t.root / "proj" / "src" / "big.log", big);
+        const std::string big_found = run(tools, "search_files", json{{"query", "big-file-needle"}});
+        CHECK(contains(big_found, "big.log"));
+        fs::remove(t.root / "proj" / "src" / "big.log");
+    }
+
     // The prompt paragraph names the folder; empty when nothing is granted.
     CHECK(contains(tapto::folder_prompt(set), "proj"));
     set.clear();
