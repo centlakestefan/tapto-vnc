@@ -129,4 +129,11 @@ std::string sanitizeToolResult(const std::string& result, const std::string& too
     return clean;
 }
 
+std::string sanitizeUserMessage(const std::string& in) {
+    // No per-call log line: a prompt that fails this check is re-sent every
+    // turn for as long as it sits in the history, so logging it would turn
+    // one bad paste into a repeated warning.
+    return sanitizeUtf8(in);
+}
+
 } // namespace tapto

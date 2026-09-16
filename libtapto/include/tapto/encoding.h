@@ -16,12 +16,21 @@ namespace tapto {
 // payload, which is what `type`/`cat`/redirections on Windows tend to produce.
 // BOM-marked UTF-16/UTF-32 is transcoded to UTF-8 so the real content survives
 // instead of turning into U+FFFD; a UTF-8 BOM is dropped; any other malformed
-// sequence is replaced with U+FFFD so the result always serializes. Tool results are the intended callers; the user prompt is
-// handled upstream and passed through unsanitized.
+// sequence is replaced with U+FFFD so the result always serializes. The
+// intended callers are tool results (sanitizeToolResult) and user prompts
+// (sanitizeUserMessage); both are applied at the moment a message enters the
+// conversation history, so every subsequent turn stays well-formed.
 std::string sanitizeUtf8(const std::string& in);
 
 // sanitizeUtf8 plus a WARN log line naming the tool that produced the bad
 // bytes, so the offending command can be fixed at its source.
 std::string sanitizeToolResult(const std::string& result, const std::string& tool_name);
+
+// User-prompt variant of sanitizeUtf8: same normalisation, no per-tool log
+// line (a prompt that fails it would log on every turn for as long as it
+// stays in the history). The tool-result variant already runs on the content
+// of the prompt itself once it enters history, so this only protects the
+// prompt's own first turn.
+std::string sanitizeUserMessage(const std::string& in);
 
 } // namespace tapto

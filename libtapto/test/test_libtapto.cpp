@@ -163,6 +163,19 @@ void test_sanitize_utf8() {
         threw = true;
     }
     CHECK(!threw);
+
+    // sanitizeUserMessage is the prompt-side entry point: a Latin-1 byte such
+    // as 0x9E (a "ž" typed on a console whose code page is not UTF-8) must be
+    // normalised to U+FFFD rather than left to abort the conversation's first
+    // serialization.
+    const std::string prompt = "fix the \x9E in main.cpp";
+    const std::string clean_prompt = tapto::sanitizeUserMessage(prompt);
+    CHECK_EQ(clean_prompt, std::string("fix the \xEF\xBF\xBD in main.cpp"));
+    try {
+        (void)json(clean_prompt).dump();
+    } catch (...) {
+        CHECK(false); // must serialize
+    }
 }
 
 // --- base64 -----------------------------------------------------------------

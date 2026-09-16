@@ -401,11 +401,14 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
 
     if (!m_api_client) init_api_client();
 
-    // Add the user message to persistent history.
+    // Add the user message to persistent history. Sanitize on entry: a prompt
+    // that carries invalid UTF-8 would abort the first request that serializes
+    // it with json.exception.type_error.316, so the turn dies before the model
+    // ever sees it.
     if (!user_message.empty()) {
         m_conversation_history.push_back({
             {"role", "user"},
-            {"content", user_message}
+            {"content", tapto::sanitizeUserMessage(user_message)}
             });
     }
 
