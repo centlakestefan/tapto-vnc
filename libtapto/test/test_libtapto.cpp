@@ -759,6 +759,114 @@ void test_folder_set_resolve() {
     CHECK(set.resolve("other/secret.txt", out, err));
 }
 
+// A program with a working directory of its own names it the home root: the
+// folder tools reach it, relative paths land in it, and it is not a grant.
+void test_folder_set_home() {
+    Tree t("folders-home");
+    tapto::FolderSet set;
+    fs::path out;
+    std::string err;
+
+    CHECK(starts_with(set.set_home((t.root / "nope").string()), "ERROR:"));
+    CHECK(set.home() == nullptr);
+
+    // A grant the home covers is dropped; the home leads the list.
+    set.add((t.root / "proj" / "src").string());
+    CHECK_EQ(set.set_home((t.root / "proj").string(), /*writable=*/true), std::string(""));
+    CHECK_EQ(set.folders().size(), std::size_t(1));
+    CHECK(set.home() != nullptr);
+    CHECK_EQ(set.home()->label, std::string("proj"));
+    CHECK(set.home()->writable);
+    CHECK(!set.empty());
+    CHECK(!set.has_grants());
+    CHECK(tapto::folder_prompt(set).empty());
+
+    // Not a grant: it cannot be removed or have its mode changed, by label
+    // or by path, and a subfolder of it is already covered.
+    CHECK(!set.remove("proj"));
+    CHECK(!set.remove((t.root / "proj").string()));
+    CHECK(!set.set_writable("proj", false));
+    CHECK(set.home()->writable);
+    std::string label;
+    CHECK_EQ(set.add((t.root / "proj" / "src").string(), &label), std::string(""));
+    CHECK_EQ(label, std::string("proj"));
+    CHECK(!set.has_grants());
+
+    // Alone, it resolves relative, labelled and absolute paths.
+    CHECK(set.resolve("src/main.cpp", out, err));
+    CHECK(fs::equivalent(out, t.root / "proj" / "src" / "main.cpp"));
+    CHECK(set.resolve("proj/src/main.cpp", out, err));
+    CHECK(fs::equivalent(out, t.root / "proj" / "src" / "main.cpp"));
+    CHECK(set.resolve((t.root / "proj" / "README.md").string(), out, err));
+
+    // With a grant beside it a bare relative path is still the home's, never
+    // the grant's and never ambiguous; the grant goes by label or absolute.
+    fs::create_directories(t.root / "other" / "src");
+    Tree::write(t.root / "other" / "src" / "main.cpp", "// the other project\n");
+    set.add((t.root / "other").string());
+    CHECK(set.has_grants());
+    CHECK_EQ(set.folders().front().label, std::string("proj"));
+    CHECK(set.resolve("src/main.cpp", out, err));
+    CHECK(fs::equivalent(out, t.root / "proj" / "src" / "main.cpp"));
+    CHECK(set.resolve("src/not-yet.cpp", out, err));
+    CHECK_EQ(set.display(out), std::string("proj/src/not-yet.cpp"));
+    CHECK(set.resolve("other/secret.txt", out, err));
+    CHECK(fs::equivalent(out, t.root / "other" / "secret.txt"));
+
+    // The home's own subfolder wins over a grant whose label matches it, but
+    // only for what it holds: the rest of the grant stays reachable by label.
+    fs::create_directories(t.root / "proj" / "other");
+    Tree::write(t.root / "proj" / "other" / "local.txt", "home's\n");
+    CHECK(set.resolve("other/local.txt", out, err));
+    CHECK(fs::equivalent(out, t.root / "proj" / "other" / "local.txt"));
+    CHECK(set.resolve("other/secret.txt", out, err));
+    CHECK(fs::equivalent(out, t.root / "other" / "secret.txt"));
+    fs::remove_all(t.root / "proj" / "other");
+
+    // Outside both is refused, and the refusal names the working directory
+    // rather than saying only the grants can be read.
+    fs::create_directories(t.root / "third");
+    CHECK(!set.resolve((t.root / "third").string(), out, err));
+    CHECK(contains(err, "the working directory and every granted folder"));
+    CHECK(contains(err, "(working directory)"));
+
+    // Tools: no `folder` means the home; read_file takes a bare relative path.
+    auto tools = tapto::folder_tools(set);
+    const std::string listing = run(tools, "list_files", json::object());
+    CHECK(contains(listing, "proj/src/main.cpp"));
+    CHECK(!contains(listing, "secret.txt"));
+    CHECK(contains(run(tools, "list_files", json{{"folder", "other"}}), "other/secret.txt"));
+    CHECK(contains(run(tools, "read_file", json{{"path", "src/main.cpp"}}), "1|int main() {"));
+    CHECK(contains(run(tools, "read_file", json{{"path", "other/src/main.cpp"}}), "the other project"));
+    const std::string found = run(tools, "search_files", json{{"query", "needle"}});
+    CHECK(contains(found, "proj/src/main.cpp"));
+    const std::string listed = run(tools, "list_folders", json::object());
+    CHECK(contains(listed, "working directory, read and write"));
+    CHECK(contains(listed, "other"));
+    for (const auto& tool : tools) {
+        if (tool.name == "read_file") CHECK(contains(tool.description, "working directory"));
+    }
+
+    // The prompt lists the grant, and says the tools reach the home too.
+    const std::string prompt = tapto::folder_prompt(set);
+    CHECK(contains(prompt, "other"));
+    CHECK(contains(prompt, "working directory too"));
+    CHECK(!contains(prompt, "read and write"));   // the home's mode is not a grant's
+    CHECK(set.set_writable("other", true));
+    CHECK(contains(tapto::folder_prompt(set), "read and write"));
+
+    // clear() revokes the grants and keeps the home.
+    set.clear();
+    CHECK(set.home() != nullptr);
+    CHECK(!set.has_grants());
+
+    // A set without a home keeps the original descriptions.
+    tapto::FolderSet plain;
+    for (const auto& tool : tapto::folder_tools(plain)) {
+        CHECK(!contains(tool.description, "working directory"));
+    }
+}
+
 void test_folder_tools() {
     Tree t("folders-tools");
     tapto::FolderSet set;
@@ -948,6 +1056,7 @@ int main() {
     test_fs_helpers();
     test_folder_set_grants();
     test_folder_set_resolve();
+    test_folder_set_home();
     test_folder_tools();
     test_certificates();
 

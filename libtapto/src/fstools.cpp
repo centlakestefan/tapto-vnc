@@ -187,14 +187,49 @@ std::string label_for(const fs::path& root, const std::vector<Folder>& taken) {
     }
 }
 
+// The roots a refusal names. With a home root the heading and the rows say
+// which one is the working directory, so the model is not told it is out of
+// reach; without one the wording is the original.
 std::string granted_list(const std::vector<Folder>& folders) {
     if (folders.empty()) return "No folders are granted.";
-    std::string out = "Granted folders:";
-    for (const auto& f : folders) out += "\n  " + f.label + "  ->  " + f.root.generic_string();
+    const bool has_home = folders.front().home;
+    std::string out = has_home ? "Reachable folders:" : "Granted folders:";
+    for (const auto& f : folders) {
+        out += "\n  " + f.label + "  ->  " + f.root.generic_string() +
+               (f.home ? "  (working directory)" : "");
+    }
     return out;
 }
 
 } // namespace
+
+std::string FolderSet::set_home(const std::string& path, bool writable) {
+    if (path.empty()) return "ERROR: no folder given.";
+    std::error_code ec;
+    const fs::path given(path);
+    if (!fs::exists(given, ec)) return "ERROR: '" + path + "' does not exist.";
+    if (!fs::is_directory(given, ec)) return "ERROR: '" + path + "' is not a directory.";
+
+    const fs::path root = canonical_or_normal(fs::absolute(given, ec));
+    // A previous home goes, and so does any grant the new one covers.
+    m_folders.erase(std::remove_if(m_folders.begin(), m_folders.end(),
+                                   [&](const Folder& f) { return f.home || is_within(root, f.root); }),
+                    m_folders.end());
+
+    Folder f;
+    f.root = root;
+    f.label = label_for(root, m_folders);
+    f.writable = writable;
+    f.home = true;
+    m_folders.insert(m_folders.begin(), std::move(f));
+    return "";
+}
+
+void FolderSet::clear() {
+    m_folders.erase(std::remove_if(m_folders.begin(), m_folders.end(),
+                                   [](const Folder& f) { return !f.home; }),
+                    m_folders.end());
+}
 
 const Folder* FolderSet::find(const std::string& path_or_label) const {
     for (const auto& f : m_folders) {
@@ -240,14 +275,14 @@ std::string FolderSet::add(const std::string& path, std::string* label_out, bool
 
 bool FolderSet::set_writable(const std::string& path_or_label, bool writable) {
     const Folder* f = find(path_or_label);
-    if (!f) return false;
+    if (!f || f->home) return false;
     m_folders[static_cast<size_t>(f - m_folders.data())].writable = writable;
     return true;
 }
 
 bool FolderSet::remove(const std::string& path_or_label) {
     const Folder* f = find(path_or_label);
-    if (!f) return false;
+    if (!f || f->home) return false;
     m_folders.erase(m_folders.begin() + (f - m_folders.data()));
     return true;
 }
@@ -276,10 +311,18 @@ bool FolderSet::resolve(const std::string& input,
         for (const auto& f : m_folders) {
             if (f.label == head) { by_label = &f; break; }
         }
-        if (by_label) {
+        // The working directory's own files come first, so a grant whose
+        // label happens to match one of its subfolders cannot shadow them.
+        const Folder* h = home();
+        std::error_code ec;
+        if (h && fs::exists(h->root / candidate, ec)) {
+            abs = h->root / candidate;
+        } else if (by_label) {
             fs::path rest;
             for (auto it = std::next(candidate.begin()); it != candidate.end(); ++it) rest /= *it;
             abs = by_label->root / rest;
+        } else if (h) {
+            abs = h->root / candidate;
         } else if (m_folders.size() == 1) {
             abs = m_folders.front().root / candidate;
         } else {
@@ -293,8 +336,9 @@ bool FolderSet::resolve(const std::string& input,
     const fs::path resolved = canonical_or_normal(abs);
     const Folder* owner = owner_of(resolved);
     if (!owner) {
-        error = "ERROR: '" + input + "' is outside every granted folder. Only what is under " +
-                "these can be read: " + granted_list(m_folders);
+        error = "ERROR: '" + input + "' is outside " +
+                (home() ? "the working directory and every granted folder" : "every granted folder") +
+                ". Only what is under these can be read: " + granted_list(m_folders);
         return false;
     }
     out = resolved;
@@ -345,12 +389,13 @@ int int_arg(const json& in, const char* key, int fallback) {
 }
 
 // The folder a listing or search starts in: the `folder` argument when given,
-// the only granted folder when there is one, otherwise an error.
+// else the home root, else the only granted folder when there is one,
+// otherwise an error.
 bool pick_folder(const FolderSet& folders, const json& in, fs::path& base,
                  const Folder*& owner, std::string& error) {
     const std::string arg = str_arg(in, "folder");
     if (arg.empty()) {
-        if (folders.folders().size() == 1) {
+        if (folders.home() || folders.folders().size() == 1) {
             owner = &folders.folders().front();
             base = owner->root;
             return true;
@@ -366,6 +411,16 @@ std::string tool_list_folders(const FolderSet& folders) {
     if (folders.empty()) {
         return "No folders are granted. The user can grant one by typing "
                "/add-folder <path> in the chat.";
+    }
+    if (folders.home()) {
+        std::string out = "You can reach these folders (refer to files as <label>/<relative path>; "
+                          "a path without a label is relative to the working directory):";
+        for (const auto& f : folders.folders()) {
+            out += "\n  " + f.label + "  ->  " + f.root.generic_string() + "  (" +
+                   (f.home ? "working directory, " : "") +
+                   (f.writable ? "read and write" : "read-only") + ")";
+        }
+        return out;
     }
     std::string out = "Read-only access to these folders (refer to files as <label>/<relative path>):";
     for (const auto& f : folders.folders()) {
@@ -547,15 +602,22 @@ const json kInt = {{"type", "integer"}};
 
 std::vector<ToolSpec> folder_tools(const FolderSet& folders) {
     const FolderSet* set = &folders;
+    // With a home root the descriptions say the working directory is in
+    // reach; without one they are the original wording, byte for byte.
+    const bool has_home = folders.home() != nullptr;
     std::vector<ToolSpec> tools;
 
     {
         ToolSpec t;
         t.name = "list_folders";
-        t.description =
-            "List the folders the user has granted you read-only access to, with the "
-            "label to refer to each one by. Files are addressed as <label>/<relative "
-            "path>. You cannot create, edit or delete anything in them.";
+        t.description = has_home
+            ? "List the folders you can reach -- your working directory and the ones "
+              "the user has granted -- with the label to refer to each one by and "
+              "whether it is read-only. Files are addressed as <label>/<relative "
+              "path>; a path without a label is relative to the working directory."
+            : "List the folders the user has granted you read-only access to, with the "
+              "label to refer to each one by. Files are addressed as <label>/<relative "
+              "path>. You cannot create, edit or delete anything in them.";
         t.parameters = object_schema(json::object(), {});
         t.executor = [set](Context&, const json&) { return tool_list_folders(*set); };
         t.display = [](const json&) { return std::string("List folders"); };
@@ -564,10 +626,14 @@ std::vector<ToolSpec> folder_tools(const FolderSet& folders) {
     {
         ToolSpec t;
         t.name = "list_files";
-        t.description =
-            "List the files under a granted folder, recursively, with sizes. `folder` "
-            "is a label from list_folders or a path inside one (optional when only one "
-            "folder is granted). `pattern` is a glob on the file name -- '*.cpp', "
+        t.description = std::string(has_home
+            ? "List the files under the working directory or a granted folder, "
+              "recursively, with sizes. `folder` is a label from list_folders or a "
+              "path inside one (omitted, it is the working directory). "
+            : "List the files under a granted folder, recursively, with sizes. `folder` "
+              "is a label from list_folders or a path inside one (optional when only one "
+              "folder is granted). ") +
+            "`pattern` is a glob on the file name -- '*.cpp', "
             "'README*' -- and `max` caps the listing (default 200). Build output, .git "
             "and node_modules are skipped. Start here to learn a project's shape "
             "before reading files.";
@@ -582,9 +648,14 @@ std::vector<ToolSpec> folder_tools(const FolderSet& folders) {
     {
         ToolSpec t;
         t.name = "read_file";
-        t.description =
-            "Read a text file from a granted folder, with line numbers. `path` is "
-            "<label>/<relative path> as list_files shows it. Optional `start_line` "
+        t.description = std::string(has_home
+            ? "Read a text file from the working directory or a granted folder, with "
+              "line numbers. `path` is <label>/<relative path> as list_files shows "
+              "it, a path relative to the working directory, or an absolute path "
+              "under either. "
+            : "Read a text file from a granted folder, with line numbers. `path` is "
+              "<label>/<relative path> as list_files shows it. ") +
+            "Optional `start_line` "
             "and `end_line` (1-based, inclusive) read a slice; a long file is "
             "truncated with a note saying where to continue. Binary files are "
             "described, not dumped.";
@@ -603,8 +674,10 @@ std::vector<ToolSpec> folder_tools(const FolderSet& folders) {
     {
         ToolSpec t;
         t.name = "search_files";
-        t.description =
-            "Search the text files under a granted folder for a literal string "
+        t.description = std::string(has_home
+            ? "Search the text files under the working directory or a granted folder "
+            : "Search the text files under a granted folder ") +
+            "for a literal string "
             "(case-sensitive), reporting each matching file with its matching lines "
             "and line numbers. `folder` as for list_files; `pattern` narrows by file "
             "name. Use it to find where something is defined or mentioned before "
@@ -618,9 +691,36 @@ std::vector<ToolSpec> folder_tools(const FolderSet& folders) {
 }
 
 std::string folder_prompt(const FolderSet& folders) {
-    if (folders.empty()) return "";
+    if (!folders.has_grants()) return "";
     bool any_writable = false;
-    for (const auto& f : folders.folders()) any_writable = any_writable || f.writable;
+    for (const auto& f : folders.folders()) any_writable = any_writable || (f.writable && !f.home);
+
+    // A program with a working directory of its own: the grants come on top
+    // of it, and the paragraph says the folder tools reach it too -- a model
+    // told only about the grants concludes read_file cannot read its project.
+    if (const Folder* home = folders.home()) {
+        std::string out =
+            "The user has granted you access to these folders on their machine, beyond "
+            "your working directory:\n";
+        for (const auto& f : folders.folders()) {
+            if (f.home) continue;
+            out += "  " + f.label + "  (" + f.root.generic_string() + ")" +
+                   (f.writable ? "  -- read and write" : "  -- read-only") + "\n";
+        }
+        out += "Use list_files to see a folder's shape, search_files to find where something "
+               "lives, and read_file to read it, addressing files as <label>/<relative path>. "
+               "These tools reach your working directory too, as " + home->label + " (" +
+               home->root.generic_string() + "): a path without a label is relative to it. ";
+        if (any_writable) {
+            out += "Under a folder marked read and write you may also create and edit files "
+                   "with your file-editing tool, giving the path either as <label>/<relative "
+                   "path> or as the absolute path shown above. ";
+        }
+        out += "A read-only folder cannot be modified, and nothing outside the working "
+               "directory and these folders is reachable; if you need another folder, ask "
+               "the user to grant it with /add-folder.";
+        return out;
+    }
 
     // The all-read-only wording is the original one and is unchanged: a
     // program that never grants write access gets the same prompt as before.

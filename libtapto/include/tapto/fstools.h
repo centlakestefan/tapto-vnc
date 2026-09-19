@@ -41,6 +41,9 @@ struct Folder {
     // the program's editor consults (tapto-code's does), and a program with
     // no editor simply never sets it. Off by default.
     bool writable = false;
+    // The program's own working directory, set with FolderSet::set_home: always
+    // first in the set, never removed, its mode never changed.
+    bool home = false;
 };
 
 class FolderSet {
@@ -54,25 +57,53 @@ public:
     std::string add(const std::string& path, std::string* label_out = nullptr,
                     bool writable = false);
 
-    // Change a granted folder's mode. False if nothing matched.
+    // Name the program's working directory as the home root, for a program
+    // whose own tools already work there (tapto-code). The tools in this file
+    // then reach it like a granted folder, a path without a label is relative
+    // to it, and listings and refusals name it, so the model is never told
+    // that its own working directory is out of reach. It is not a grant: it
+    // stays first in folders(), remove() and set_writable() refuse it, and
+    // clear() keeps it. Grants it covers are dropped. Returns an empty string
+    // on success, otherwise an "ERROR: ..." sentence. A program that never
+    // calls this behaves exactly as before.
+    std::string set_home(const std::string& path, bool writable = false);
+
+    // The home root, or null when the program has none.
+    const Folder* home() const {
+        return !m_folders.empty() && m_folders.front().home ? &m_folders.front() : nullptr;
+    }
+
+    // Change a granted folder's mode. False if nothing matched, or if it is
+    // the home root.
     bool set_writable(const std::string& path_or_label, bool writable);
 
-    // The granted folder a label or path names, or null.
+    // The folder a label or path names (the home root included), or null.
     const Folder* get(const std::string& path_or_label) const { return find(path_or_label); }
 
-    // Revoke by label or by path. False if nothing matched.
+    // Revoke by label or by path. False if nothing matched, or if it is the
+    // home root.
     bool remove(const std::string& path_or_label);
 
+    // Every reachable folder: the home root first when there is one, then the
+    // grants in the order they were made.
     const std::vector<Folder>& folders() const { return m_folders; }
     bool empty() const { return m_folders.empty(); }
-    void clear() { m_folders.clear(); }
+    // True when the user has granted something, the home root not counted.
+    bool has_grants() const { return m_folders.size() > (home() ? 1u : 0u); }
+    // Revoke every grant. The home root stays.
+    void clear();
 
     // Resolve a model-supplied path to a real one inside a granted root.
     //
     //   "tapto-code/src/main.cpp"   label-relative
     //   "tapto-code"                the root itself
     //   "C:/proj/tapto-code/src"    absolute, must fall under a root
-    //   "src/main.cpp"              relative to the only root, when there is one
+    //   "src/main.cpp"              relative to the home root; without one,
+    //                               to the only root, when there is one
+    //
+    // With a home root, a relative path that exists under it is taken from
+    // there even when its first component is also a grant's label: the
+    // project's own files win, as they do in tapto-code's editor.
     //
     // `..` and symlinks are resolved before the check, so neither escapes.
     // Returns true and fills `out` (and `folder`, when given) on success;
@@ -95,11 +126,15 @@ private:
 // The read-only tools over a folder set: list_folders, list_files, read_file,
 // search_files. `folders` must outlive the returned specs; the executors hold
 // a pointer to it, so a set that grows later is seen by tools built earlier.
+// The descriptions mention the working directory when the set has a home root
+// at the time of the call, so set_home() comes first.
 std::vector<ToolSpec> folder_tools(const FolderSet& folders);
 
 // A system-prompt paragraph naming the granted roots and the rules, or an empty
-// string when nothing is granted. Programs append it to their own prompt when
-// they hand out folder_tools(), so the model knows both the tools and why.
+// string when nothing is granted (a home root alone is nothing granted: the
+// program's own prompt covers its working directory). Programs append it to
+// their own prompt when they hand out folder_tools(), so the model knows both
+// the tools and why.
 std::string folder_prompt(const FolderSet& folders);
 
 // --- Shared helpers ---------------------------------------------------------
