@@ -4,6 +4,20 @@ Notable changes to tapto-vnc. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); each entry is one line
 about what changed for you, and the commit it links to carries the reasoning.
 
+## How an entry is written
+
+Each version's section is published as its release notes on taptomatic.com, so
+the reader is someone who uses tapto-vnc, not someone who reads its source.
+
+- The entry stands alone. The reader has not seen earlier entries, the code or
+  the discussion, so it does not lean on terms that were introduced there.
+- It says what you saw and what happens now, in the words you would use:
+  flags you type, config keys you set, what happens on the remote screen.
+- No internal names: not the tools the model calls, not libraries, not
+  exception codes. The exception is a breaking change to one of them, where
+  the name is the point.
+- One or two sentences. The cause and the reasoning go in the commit message.
+
 ## What counts as a breaking change
 
 tapto-vnc is a program, not a library, so the surface that has to stay stable is
