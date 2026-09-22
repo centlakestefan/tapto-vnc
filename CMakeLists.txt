@@ -74,11 +74,15 @@ endif()
 # --- libtapto ---------------------------------------------------------------
 # The config store, the secret resolver, provider resolution and the three
 # provider clients with the agent loop inside are libtapto's, shared with
-# tapto-code and tapto-word. It is vendored here as a byte-identical copy of
-# the one in tapto-word (diff -r against ../tapto-word/libtapto must be empty;
-# a fix lands there first), and it brings its own pins for nlohmann_json and
-# cpp-httplib, exported on the `tapto::tapto` target, so they are not repeated
-# here. OpenSSL was found above; the library reuses that.
+# tapto-code and tapto-word. It is fetched from its own repository at a tag --
+# it used to be a copy vendored here, one of five kept byte-identical by hand
+# -- and it brings its own pins for nlohmann_json and cpp-httplib, exported on
+# the `tapto::tapto` target, so they are not repeated here. OpenSSL was found
+# above; the library reuses that.
+#
+# Bump LIBTAPTO_TAG to take a library change. -DLIBTAPTO_TAG=main builds
+# against an unreleased library, and -DFETCHCONTENT_SOURCE_DIR_LIBTAPTO=<path>
+# against a working tree, which is how a change spanning both is developed.
 #
 # What is NOT in the library, and is this program's own: the screen-control
 # tools (src/computer_tools.cpp), the VNC session, the MCP server, the CLI, and
@@ -87,7 +91,13 @@ endif()
 #
 # Its unit tests run under ctest with ours.
 set(LIBTAPTO_BUILD_TESTS ON CACHE BOOL "" FORCE)
-add_subdirectory(libtapto)
+set(LIBTAPTO_TAG "v0.1.0" CACHE STRING "libtapto version to build against")
+FetchContent_Declare(libtapto
+  GIT_REPOSITORY https://github.com/centlakestefan/libtapto.git
+  GIT_TAG        ${LIBTAPTO_TAG}
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(libtapto)
 
 # OpenSSL for this directory's own targets (tapto_rfb). Imported targets are
 # scoped to the directory that created them, so the library's OpenSSL::SSL is
@@ -199,7 +209,7 @@ install(TARGETS tapto-vnc vnc-smoketest RUNTIME DESTINATION bin)
 # Plain executables with assertions of their own, so `ctest` needs no test
 # framework. Run with: ctest --test-dir build --output-on-failure
 #
-# The library's own test (test-libtapto) is registered by libtapto/CMakeLists.txt.
+# The library's own test (test-libtapto) is registered by libtapto's own CMakeLists.
 enable_testing()
 
 # The screen-control tools' status-line labels, through the ToolSpec::display

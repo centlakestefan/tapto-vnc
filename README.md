@@ -34,9 +34,9 @@ tapto-vnc --host 192.0.2.10 "Open the settings app and turn on dark mode"
 - **Or hand the tools to another model** — `--mcp` serves the same nine tools
   over MCP on localhost, so Claude Code, an editor, or anything else that
   speaks the protocol can drive the screen instead.
-- **Self-contained** — one C++17 binary; the shared tapto code is vendored
-  in-tree as `libtapto/`, and nlohmann/json, cpp-httplib and zlib are fetched
-  at build time.
+- **Self-contained** — one C++17 binary; the shared tapto code (libtapto),
+  nlohmann/json, cpp-httplib and zlib are fetched at build time, each pinned
+  to a version.
 
 ## Build
 
@@ -57,9 +57,9 @@ looks wrong.
 The code every tapto program shares — the config store and secret resolver,
 provider resolution, and the three provider clients (Claude, OpenAI-compatible,
 Gemini) with the agent loop inside — is one static library, **libtapto**,
-vendored in-tree under `libtapto/` and built with `add_subdirectory`. The same
-directory, byte for byte, lives in tapto-code and tapto-word; a fix to the
-library lands in one copy and is copied to the others. What is this program's
+fetched at a pinned tag from [its own repository](https://github.com/centlakestefan/libtapto)
+and shared with tapto-code, tapto-word and their siblings; a fix lands there
+once and each program takes it by bumping `LIBTAPTO_TAG`. What is this program's
 own: the screen-control tools (`src/computer_tools.cpp`), the VNC session and
 WebMKS console, the MCP server, the CLI, and `src/ui.cpp`, which gives the
 `tapto::ui` functions the library declares their terminal bodies.
@@ -69,8 +69,7 @@ The library's unit tests run under `ctest` alongside this program's.
 ### Dependencies
 
 Fetched automatically at configure time via CMake `FetchContent` (needs git and
-network on the first configure); the first two are pinned in
-`libtapto/CMakeLists.txt`:
+network on the first configure); the first two are pinned by libtapto:
 
 - [nlohmann/json](https://github.com/nlohmann/json) `v3.11.3`
 - [cpp-httplib](https://github.com/yhirose/cpp-httplib) `v0.15.3`
