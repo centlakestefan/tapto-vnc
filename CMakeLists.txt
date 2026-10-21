@@ -171,6 +171,7 @@ add_library(tapto_agent STATIC
   src/frame_index.cpp
   src/input_map.cpp
   src/mcp_server.cpp
+  src/session.cpp
   src/ui.cpp
 )
 target_include_directories(tapto_agent PUBLIC
@@ -222,3 +223,14 @@ else()
   target_compile_options(test-labels PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME labels COMMAND test-labels)
+
+# The saved conversation behind --resume: round trip, refused files, one file
+# per machine, and the screenshots left out of it.
+add_executable(test-session tests/test_session.cpp)
+target_link_libraries(test-session PRIVATE tapto_agent)
+if(MSVC)
+  target_compile_options(test-session PRIVATE /W4 /EHsc /utf-8)
+else()
+  target_compile_options(test-session PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME session COMMAND test-session)

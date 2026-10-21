@@ -3,9 +3,11 @@
 //
 // tapto-vnc: lets a model drive a remote screen over VNC.
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -27,6 +29,7 @@
 #include "tapto/config.h"
 #include "tapto/context.h"
 #include "tapto/frame_index.h"
+#include "tapto/fstools.h"
 #include "tapto/gemini.h"
 #include "tapto/input_map.h"
 #include "tapto/log.h"
@@ -34,6 +37,7 @@
 #include "tapto/paths.h"
 #include "tapto/policy.h"
 #include "tapto/secret.h"
+#include "tapto/session.h"
 #include "tapto/termui.h"
 #include "tapto/mcp_server.h"
 #include "tapto/version.h"
@@ -332,6 +336,14 @@ That stops the remaining steps and hands the session back to a person, with the 
 
 Use it only when you are actually stuck. Finishing the step is what is wanted, and a step that went differently from how it was described but reached what it asked for is finished, not blocked — report that in the ordinary way.)";
 
+// Only in a conversation brought back with --resume or /resume. It was saved
+// without its screenshots, and whatever the last one showed may be gone: a
+// model that trusts its memory of the screen clicks a button that closed
+// while nobody was running it.
+const char* kResumeGuidance = R"(
+
+This conversation was saved earlier and has been resumed, without the screenshots it held. The remote screen may have changed since: someone may have used the machine, a dialog may have closed, or a step that was under way may have finished. Take a screenshot before doing anything else, and work from what it shows. Your earlier replies say what was done; the screen says where things stand now.)";
+
 // "tapto-vnc 0.2.0 (v0.1.0-9-gcef058c)" — the release, then the exact commit.
 //
 // The commit is the part that earns its place. A run's lasting artifact is its
@@ -382,6 +394,9 @@ void usage(const char* argv0) {
         << "                      Gemini 3 has no true off: 'off' asks for the\n"
         << "                      least thinking it allows.\n"
         << "  --max-steps <n>     Tool-call limit per reply (default: 60)\n"
+        << "  --resume            Continue the conversation last held with this\n"
+        << "                      machine from this folder. The model takes a new\n"
+        << "                      screenshot first: the screen may have changed.\n"
         << "  --trace <path>      Append request/response diagnostics here\n"
         << "  -f, --file <path>   Send the prompts in <path> as consecutive turns,\n"
         << "                      separated by a line of three or more '='. For a\n"
@@ -479,7 +494,19 @@ void usage(const char* argv0) {
         << "Any remaining arguments are sent as the first task, ahead of any -f\n"
         << "file. With neither, tapto-vnc starts at an interactive prompt; it returns\n"
         << "to one after a task or a file, so a run can be followed up by hand.\n"
-        << "Type /exit to quit.\n";
+        << "Type /exit to quit.\n\n"
+        << "At the prompt, or as a block of a -f file:\n"
+        << "  /effort [<level>]    show or set how hard the model thinks: Claude's\n"
+        << "                       low|medium|high|xhigh|max, or the openai\n"
+        << "                       dialect's reasoning_effort (off clears it).\n"
+        << "                       Saved for the folder tapto-vnc was started in.\n"
+        << "  /add-folder <path>   let the model read files in another folder on\n"
+        << "                       this machine; the folder tapto-vnc was started\n"
+        << "                       in is always readable. Nothing can be changed.\n"
+        << "  /remove-folder <p>   take a granted folder away again\n"
+        << "  /list-folders        the folders the model can read\n"
+        << "  /resume              continue the saved conversation with this\n"
+        << "                       machine, as --resume; again to switch back\n";
 }
 
 const char* option(int argc, char** argv, int& i, const char* flag) {
@@ -562,6 +589,94 @@ bool blockedReply(const std::string& reply, std::string& reason) {
 // nobody is watching parked at a prompt.
 bool isExitCommand(const std::string& text) {
     return text == "/exit" || text == "/quit";
+}
+
+// At most `max` bytes of `text`, cut on a character boundary and marked, so a
+// long reply shown again on /resume does not scroll the notice out of view.
+std::string excerpt(const std::string& text, size_t max) {
+    if (text.size() <= max) return text;
+    size_t end = max;
+    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+    return text.substr(0, end) + " …";
+}
+
+std::string trim(const std::string& text) {
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return std::string();
+    return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+}
+
+// True when `line` is the slash command `name`, alone or followed by
+// whitespace, and fills `arg` with the rest, trimmed. "/effortless" is not
+// "/effort": it goes to the model like any other text.
+bool slashCommand(const std::string& line, const std::string& name, std::string& arg) {
+    const std::string bare = trim(line);
+    if (bare.rfind(name, 0) != 0) return false;
+    if (bare.size() > name.size() && bare[name.size()] != ' ' && bare[name.size()] != '\t') {
+        return false;
+    }
+    arg = trim(bare.substr(name.size()));
+    return true;
+}
+
+// A slash-command argument with its surrounding quotes removed, so a path
+// with spaces can be pasted as the shell shows it.
+std::string unquote(std::string text) {
+    text = trim(text);
+    if (text.size() >= 2 && ((text.front() == '"' && text.back() == '"') ||
+                             (text.front() == '\'' && text.back() == '\''))) {
+        text = text.substr(1, text.size() - 2);
+    }
+    return text;
+}
+
+// What /list-folders prints, and what the other folder commands append. The
+// working directory leads, as in tapto-code: it is where tapto-vnc was
+// started, which is easy to forget, and the model always reaches it.
+std::string listFoldersText(const tapto::FolderSet& folders) {
+    if (folders.empty()) {
+        return "No folders are granted. Grant one with /add-folder <path>.";
+    }
+    std::ostringstream out;
+    out << "The model can read these folders:\n";
+    for (const auto& f : folders.folders()) {
+        out << "  " << f.label << "  ->  " << f.root.generic_string()
+            << (f.home ? "  (working directory)" : "") << "\n";
+    }
+    if (!folders.has_grants()) {
+        out << "No other folders are granted. Grant one with /add-folder <path>.";
+    }
+    std::string text = out.str();
+    if (!text.empty() && text.back() == '\n') text.pop_back();
+    return text;
+}
+
+// The system-prompt paragraph for the folder tools. The library's own
+// paragraph covers grants only, and says nothing about which machine the
+// files are on — which here is the point: a model driving a screen will
+// otherwise go looking on the remote disk for a file it was told it can read.
+std::string folderGuidance(const tapto::FolderSet& folders) {
+    if (folders.empty()) return "";
+    std::string out =
+        "\n\nYou can also read files on the user's own computer — the one running this "
+        "program, not the remote machine on the screen — with list_folders, list_files, "
+        "search_files and read_file. Nothing there can be changed. Use them when the task "
+        "refers to a file the user has on hand, such as text to type in or steps to follow. "
+        "They cannot reach the remote machine's disk: a file there is only reachable "
+        "through its screen.";
+    if (const tapto::Folder* home = folders.home()) {
+        out += " They reach the folder this program was started in, as " + home->label +
+               " (" + home->root.generic_string() + "), and a path without a label is "
+               "relative to it.";
+        if (!folders.has_grants()) {
+            out += " Nothing else is reachable; if you need another folder, ask the user "
+                   "to grant it with /add-folder.";
+        }
+    }
+    if (const std::string grants = tapto::folder_prompt(folders); !grants.empty()) {
+        out += "\n\n" + grants;
+    }
+    return out;
 }
 
 // The turns held in a prompt file, in the order they will be sent.
@@ -677,6 +792,7 @@ int main(int argc, char** argv) {
     int resolutionWidth = 0, resolutionHeight = 0;
     bool quiet = false;
     bool mcpMode = false;
+    bool resume = false;   // --resume
     int mcpPort = tapto::kDefaultMcpPort;
 
     for (int i = 1; i < argc; ++i) {
@@ -696,6 +812,7 @@ int main(int argc, char** argv) {
         if (arg == "--insecure") { vcenter.insecure = true; continue; }
         if (arg == "--quiet")    { quiet = true; continue; }
         if (arg == "--mcp")      { mcpMode = true; continue; }
+        if (arg == "--resume")   { resume = true; continue; }
         if (const char* v = option(argc, argv, i, "--host"))      { vnc.host = v; continue; }
         if (const char* v = option(argc, argv, i, "--display"))   { vnc.display = static_cast<uint16_t>(std::atoi(v)); continue; }
         if (const char* v = option(argc, argv, i, "--password"))  { vnc.password = v; continue; }
@@ -744,6 +861,11 @@ int main(int argc, char** argv) {
             std::cerr << "ERROR: --mcp serves the tools to an MCP client; it does not run "
                          "a task itself.\nDrop the task text and -f, and give the task to "
                          "whatever connects.\n";
+            return 2;
+        }
+        if (resume) {
+            std::cerr << "ERROR: --resume continues a conversation with tapto-vnc's own model; "
+                         "under --mcp there is none.\n";
             return 2;
         }
     } else if (mcpPort != tapto::kDefaultMcpPort) {
@@ -1320,8 +1442,291 @@ int main(int argc, char** argv) {
         if (thinking == "on")       client->setThinkingBudget(1);
         else if (thinking == "off") client->setThinkingBudget(0);
 
-        client->setSystemPrompt(systemPrompt);
+        // Files on this machine, read-only, as tapto-code has them: the working
+        // directory is the home root, and /add-folder grants more. Tools and
+        // prompt both change the request prefix, so they are rebuilt together
+        // and only on a grant -- the cache misses once per grant, not per turn.
+        // Not under --mcp (returned above): a borrowed model has its own files.
+        tapto::FolderSet folders;
+        {
+            std::error_code ec;
+            const std::string err = folders.set_home(std::filesystem::current_path(ec).string());
+            if (!err.empty()) tapto::ui::print_warning("working directory: " + err);
+        }
+        bool resumed = false;   // the conversation came back with --resume or /resume
+        auto rebuildToolsAndPrompt = [&]() {
+            context.tools = tapto::makeComputerTools();
+            if (!folders.empty()) {
+                for (auto& tool : tapto::folder_tools(folders)) {
+                    context.tools.push_back(std::move(tool));
+                }
+            }
+            client->setSystemPrompt(systemPrompt + folderGuidance(folders) +
+                                    (resumed ? kResumeGuidance : ""));
+        };
+        rebuildToolsAndPrompt();
         client->start();
+        if (const tapto::Folder* home = folders.home()) {
+            std::cout << "Files: the model can read " << home->root.generic_string()
+                      << " (/add-folder grants more)\n";
+        }
+
+        // The conversation is saved after every turn, beside the folder's
+        // local config and once per machine, so a run ended by accident
+        // (Ctrl-C, a closed window, a crash) can be continued with --resume or
+        // /resume. As in tapto-code, `saved` is the conversation /resume
+        // brings back: the one on disk when this run started, or the one a
+        // /resume set aside, so a second /resume switches back. The file
+        // follows the current conversation from its next turn on.
+        const std::string target = vmwareMode
+            ? "vm:" + vcenter.host + "/" + vmName
+            : "vnc:" + vnc.host + ":" + std::to_string(vnc.display);
+        const std::filesystem::path sessionFile = tapto::session_path(target);
+        std::optional<tapto::SavedSession> saved;
+        {
+            std::string err;
+            saved = tapto::load_session(sessionFile, target, err);
+            if (!err.empty()) tapto::ui::print_warning("saved conversation ignored: " + err);
+            if (saved && saved->history.empty() && saved->pending_prompt.empty()) saved.reset();
+        }
+        bool saveWarned = false;
+        // The current conversation, as it would be saved: without its
+        // screenshots, which show a screen that may be gone by the time it is
+        // resumed. `pending` is a prompt whose turn is under way: the history
+        // does not hold it yet, so it is saved beside it and shown on resume.
+        auto snapshot = [&](const std::string& pending = std::string()) {
+            tapto::SavedSession s;
+            s.target = target;
+            s.provider = provider;
+            s.dialect = dialect;
+            s.model = model;
+            for (const auto& f : folders.folders()) {
+                if (!f.home) s.folders.push_back(f.root.string());
+            }
+            s.pending_prompt = pending;
+            s.history = tapto::without_screenshots(client->getHistory());
+            return s;
+        };
+        auto persist = [&](const std::string& pending = std::string()) {
+            const std::string err = tapto::save_session(sessionFile, snapshot(pending));
+            // Once is enough: the same failure would repeat on every turn.
+            if (!err.empty() && !saveWarned) {
+                tapto::ui::print_warning("conversation not saved: " + err);
+                saveWarned = true;
+            }
+        };
+        auto messageCount = [](const nlohmann::json& history) {
+            return std::to_string(history.size()) +
+                   (history.size() == 1 ? " message" : " messages");
+        };
+        auto resumeSaved = [&]() {
+            if (!saved) {
+                tapto::ui::print_line(client->hasHistory()
+                    ? "(no other conversation to switch to)"
+                    : "(no conversation with this machine is saved for this folder)");
+                return;
+            }
+            // The history is in the wire format of the dialect that wrote it.
+            if (saved->dialect != dialect) {
+                tapto::ui::print_error("the saved conversation was held with '" + saved->provider +
+                                       "', which speaks " + saved->dialect + "; '" + provider +
+                                       "' speaks " + dialect + ". Start with --provider " +
+                                       saved->provider + " to resume it.");
+                return;
+            }
+            for (const auto& path : saved->folders) {
+                if (const std::string err = folders.add(path); !err.empty()) {
+                    tapto::ui::print_warning("folder not granted again: " + path + ": " + err);
+                }
+            }
+            resumed = true;
+            rebuildToolsAndPrompt();
+            // The conversation being replaced is set aside, not dropped: a
+            // second /resume brings it back.
+            std::optional<tapto::SavedSession> previous;
+            if (client->hasHistory()) previous = snapshot();
+            tapto::SavedSession next = std::move(*saved);
+            saved = std::move(previous);
+
+            client->start();   // resets the token accounting along with the history
+            client->loadHistory(next.history);
+
+            // Where it stood: the last prompt, and what the model said to it.
+            const auto steps = tapto::transcript(next.history);
+            for (size_t i = steps.size(); i-- > 0;) {
+                if (steps[i].who != tapto::TranscriptEntry::Who::User) continue;
+                std::cout << "\n> " << excerpt(trim(steps[i].text), 400) << "\n";
+                if (i + 1 < steps.size()) std::cout << excerpt(trim(steps[i + 1].text), 1200) << "\n";
+                break;
+            }
+            std::string msg = next.saved_at.empty()
+                ? "(back to the previous conversation: " + messageCount(next.history)
+                : "(resumed the conversation saved " + next.saved_at + ": " +
+                      messageCount(next.history);
+            if (next.model != model) msg += ", held with " + next.model;
+            if (saved) msg += "; /resume again to switch back";
+            msg += ". The model will look at the screen again before it acts.)";
+            if (folders.has_grants()) msg += "\n" + listFoldersText(folders);
+            if (!next.pending_prompt.empty()) {
+                msg += "\nThe last prompt had not been answered when the run ended:\n> " +
+                       next.pending_prompt;
+            }
+            tapto::ui::print_line(msg);
+            persist();
+        };
+
+        // Persist a setting to the local scope, the one for this working
+        // directory, as tapto-code's /effort does: how hard the model thinks
+        // is a choice made per project.
+        auto saveLocal = [](const std::string& key, const std::string& value) -> std::string {
+            try {
+                const auto path = tapto::config_path(tapto::Level::Local);
+                tapto::Config cfg = tapto::Config::load(path);
+                if (value.empty()) {
+                    if (!cfg.unset(key)) return "";
+                } else {
+                    cfg.set(key, value);
+                }
+                cfg.save(path);
+                return path.string();
+            } catch (const std::exception&) {
+                return "";
+            }
+        };
+
+        // The commands typed at the prompt or written in a -f file, other than
+        // /exit. False when `line` is none of them, and goes to the model.
+        auto runSlashCommand = [&](const std::string& line) -> bool {
+            std::string arg;
+
+            //   /effort            show the current level
+            //   /effort <level>    apply now and save it for this folder
+            //   /effort off        openai only: send none, the server decides
+            // Claude's effort for the claude dialect, reasoning_effort for the
+            // openai one (passed through unvalidated, as tapto-code does: which
+            // values an endpoint takes is its own business), and nothing for
+            // gemini, which has neither. Claude has no off: an unset effort is
+            // the --effort default, high, again at the next start.
+            if (slashCommand(line, "/effort", arg)) {
+                std::transform(arg.begin(), arg.end(), arg.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                const bool claude = dialect == "claude";
+                if (!claude && dialect != "openai") {
+                    tapto::ui::print_error("/effort does not apply to the " + dialect +
+                                           " dialect that '" + provider + "' speaks");
+                    return true;
+                }
+                const std::string key = claude ? "effort" : provider + "-reasoning-effort";
+                const std::string current =
+                    claude ? config.effort() : config.openaiReasoningEffort();
+                if (arg.empty()) {
+                    tapto::ui::print_line(key + " = " +
+                                          (current.empty() ? "(unset — the server picks its default)"
+                                                           : current));
+                    return true;
+                }
+                if (tapto::is_policy_managed(key)) {
+                    tapto::ui::print_error("'" + key + "' is set by your organization's policy");
+                    return true;
+                }
+                const bool off = arg == "off" || arg == "none" || arg == "default" ||
+                                 arg == "unset" || arg == "clear";
+                const std::string value = off ? "" : arg;
+                if (claude && value != "low" && value != "medium" && value != "high" &&
+                    value != "xhigh" && value != "max") {
+                    tapto::ui::print_error("/effort expects low, medium, high, xhigh or max");
+                    return true;
+                }
+                if (claude) config.setEffort(value);
+                else        config.setOpenaiReasoningEffort(value);
+                const std::string saved = saveLocal(key, value);
+                tapto::ui::print_line(key + " = " + (off ? "(unset)" : value) +
+                                      (saved.empty() ? " for this session"
+                                                     : " (saved to " + saved + ")"));
+                return true;
+            }
+
+            if (slashCommand(line, "/resume", arg)) {
+                resumeSaved();
+                return true;
+            }
+
+            if (slashCommand(line, "/list-folders", arg)) {
+                tapto::ui::print_line(listFoldersText(folders));
+                return true;
+            }
+
+            // "/add-folder <path>". Read-only whatever is asked: nothing here
+            // writes files. A trailing ro/rw, as tapto-code takes it, is
+            // accepted so the same line works in both programs.
+            if (slashCommand(line, "/add-folder", arg)) {
+                bool askedWritable = false;
+                if (const size_t sp = arg.find_last_of(" \t"); sp != std::string::npos) {
+                    std::string mode = arg.substr(sp + 1);
+                    std::transform(mode.begin(), mode.end(), mode.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (mode == "ro" || mode == "rw") {
+                        askedWritable = mode == "rw";
+                        arg = arg.substr(0, sp);
+                    }
+                }
+                const std::string path = unquote(arg);
+                if (path.empty()) {
+                    tapto::ui::print_line("usage: /add-folder <path>");
+                    return true;
+                }
+                const size_t before = folders.folders().size();
+                std::string label;
+                if (const std::string err = folders.add(path, &label); !err.empty()) {
+                    tapto::ui::print_error(err);
+                    return true;
+                }
+                if (folders.folders().size() == before) {
+                    const tapto::Folder* have = folders.get(label);
+                    tapto::ui::print_line(have && have->home
+                        ? "That is covered by the working directory ('" + label + "', " +
+                              have->root.generic_string() + "), which the model can always "
+                              "read. Nothing to grant."
+                        : "Already granted, as '" + label + "'.");
+                    return true;
+                }
+                rebuildToolsAndPrompt();
+                tapto::ui::print_line("Granted read-only access to " + path + " as '" + label +
+                                      "'. The model can now list, read and search it; it cannot "
+                                      "change anything. Revoke with /remove-folder " + label + ".");
+                if (askedWritable) {
+                    tapto::ui::print_warning("rw ignored: tapto-vnc has no tool that writes files");
+                }
+                return true;
+            }
+
+            if (slashCommand(line, "/remove-folder", arg)) {
+                const std::string target = unquote(arg);
+                if (target.empty()) {
+                    tapto::ui::print_line("usage: /remove-folder <path or label>\n\n" +
+                                          listFoldersText(folders));
+                    return true;
+                }
+                if (const tapto::Folder* f = folders.get(target); f && f->home) {
+                    tapto::ui::print_line("'" + target + "' is the working directory tapto-vnc "
+                                          "was started in; it cannot be removed.");
+                    return true;
+                }
+                if (!folders.remove(target)) {
+                    tapto::ui::print_line("'" + target + "' is not a granted folder.\n\n" +
+                                          listFoldersText(folders));
+                    return true;
+                }
+                rebuildToolsAndPrompt();
+                tapto::ui::print_line("Revoked '" + target + "'. " +
+                                      (folders.has_grants()
+                                           ? "\n" + listFoldersText(folders)
+                                           : std::string("The model reaches only the working "
+                                                         "directory now.")));
+                return true;
+            }
+            return false;
+        };
 
         // Returns false when the turn failed, which only a scripted sequence
         // acts on: at the interactive prompt the person can see what happened
@@ -1329,6 +1734,10 @@ int main(int argc, char** argv) {
         // step three is meaningless if step two never ran.
         struct Turn { bool ok; std::string reply; };
         auto runTurn = [&](const std::string& message) -> Turn {
+            // Saved before the call so a run killed mid-turn still has the
+            // prompt, and after it with the turn in the history.
+            persist(message);
+            Turn turn{false, {}};
             try {
                 // Both ends of a turn go into the frame index: what it was
                 // asked, and what it said when it finished. The frames in
@@ -1338,13 +1747,22 @@ int main(int argc, char** argv) {
                 const std::string reply = client->chat(context, message);
                 tapto::frames::record("reply", reply);
                 tapto::ui::print_reply(reply);
-                return {true, reply};
+                turn = {true, reply};
             } catch (const std::exception& e) {
                 tapto::ui::end_status();
                 tapto::ui::print_error(e.what());
-                return {false, {}};
             }
+            persist();
+            return turn;
         };
+
+        if (resume) {
+            resumeSaved();
+        } else if (saved) {
+            tapto::ui::print_line("(a conversation with this machine from " + saved->saved_at +
+                                  " is saved, " + messageCount(saved->history) +
+                                  "; /resume continues it)");
+        }
 
         if (!task.empty()) {
             runTurn(task);
@@ -1371,6 +1789,7 @@ int main(int argc, char** argv) {
                 break;
             }
             std::cout << "\n> " << filePrompts[i] << "\n";
+            if (runSlashCommand(filePrompts[i])) continue;
             const Turn turn = runTurn(filePrompts[i]);
             // A step the model could not do ends the file for the same reason
             // a failed one does: what follows was written for the screen this
@@ -1438,6 +1857,7 @@ int main(int argc, char** argv) {
             if (!std::getline(std::cin, line)) break;   // Ctrl-D
             if (isExitCommand(line)) break;
             if (blank(line)) continue;
+            if (runSlashCommand(line)) continue;
             runTurn(line);
         }
 

@@ -40,6 +40,19 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+### Added
+
+- The model can read files on your own machine: the folder tapto-vnc was started
+  in, and any folder you grant with `/add-folder <path>` (`/remove-folder` and
+  `/list-folders` manage them). Read-only, as in tapto-code.
+- `/effort` shows or changes how hard the model thinks without restarting:
+  Claude's `low` to `max`, or the openai dialect's `reasoning_effort`. The level
+  is saved for the folder tapto-vnc was started in.
+- `--resume` and `/resume` continue the conversation last held with the same
+  machine from the same folder, after Ctrl-C, a closed window or a crash. The
+  model takes a new screenshot before doing anything, since the screen may have
+  changed in the meantime.
+
 ## [1.0.0] — 2026-09-14
 
 The first stable release. The flags, config keys and tool schema described

@@ -93,7 +93,44 @@ tapto-vnc --host 192.0.2.10 --password secret "Open Notepad and type hello"
 ```
 
 With no task on the command line it starts an interactive prompt; `/exit` or
-Ctrl-D quits.
+Ctrl-D quits. A few more commands work there, and as a block of a `-f` file:
+
+| Command | |
+|---|---|
+| `/effort [<level>]` | show or change how hard the model thinks: `low`, `medium`, `high`, `xhigh` or `max` for Claude; for the openai dialect any value the endpoint takes, sent as `reasoning_effort`, or `off` to send none. Takes effect on the next request and is saved for the folder tapto-vnc was started in |
+| `/add-folder <path>` | let the model read another folder on this machine |
+| `/remove-folder <path or label>` | take a granted folder away again |
+| `/list-folders` | the folders the model can read |
+| `/resume` | continue the conversation saved for this machine (see below); a second `/resume` switches back |
+
+### Picking up where a run stopped
+
+The conversation is saved after every turn, so a run ended by accident — Ctrl-C,
+a closed window, a crash — can be continued: start tapto-vnc again in the same
+folder against the same machine with `--resume`, or type `/resume`. One
+conversation is kept per folder and machine (the host and display, or the
+vCenter and VM name), so resuming never hands the model a conversation about a
+different screen. Starting without `--resume` says when one is saved; your next
+prompt then starts a new one, which replaces it on disk.
+
+The saved conversation leaves out its screenshots. The screen may have changed
+while nothing was running, so on resume the model is told to take a new
+screenshot before it does anything, and to rely on its earlier replies for what
+was done rather than for where things stand. The folders you had granted come
+back with it. The conversation is in the provider's own format, so it resumes
+only with a provider of the same type. A prompt that was still being worked on
+when the run ended is shown so you can send it again.
+
+### Files on this machine
+
+As in tapto-code, the folder tapto-vnc was started in is its home: the model can
+list, search and read the files under it, so a task can say "type the address in
+`contacts.txt`" or "follow the steps in `install-notes.md`". `/add-folder`
+grants more folders. All of it is read-only, and it is this machine's disk, not
+the remote one's — the model is told so, because a file on the remote machine is
+only reachable through its screen. Starting tapto-vnc in your home folder makes
+everything under it readable, `~/.tapto` included, so start it in a folder that
+holds what the task needs.
 
 A task that takes several steps is better given a step at a time — the model
 then works from the screen the previous step produced, rather than planning the
@@ -385,6 +422,10 @@ build that had uncommitted changes and so cannot be reproduced from the hash.
 
 `vnc_screenshot` · `vnc_zoom` · `vnc_click` · `vnc_move` · `vnc_drag` ·
 `vnc_scroll` · `vnc_type` · `vnc_key` · `vnc_wait`
+
+and, for the files on this machine (see [Files on this machine](#files-on-this-machine)):
+`list_folders` · `list_files` · `search_files` · `read_file`. The MCP server
+does not serve these: a model of somebody else's has its own way to read files.
 
 Every action returns a fresh screenshot, because a description of an action is
 not evidence that it worked.
