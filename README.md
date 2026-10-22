@@ -411,7 +411,7 @@ Every build stamps its version and originating commit, printed by `--version`
 and written as the first line of each trace:
 
 ```
-tapto-vnc 1.0.0 (v1.0.0-3-g1a2b3c4-dirty)
+tapto-vnc 1.1.0 (v1.1.0-3-g1a2b3c4-dirty)
 ```
 
 Worth having because the lasting artifact of a run is its trace. Source moves

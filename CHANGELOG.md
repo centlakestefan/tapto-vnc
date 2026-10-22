@@ -40,18 +40,20 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-22
+
 ### Added
 
 - The model can read files on your own machine: the folder tapto-vnc was started
   in, and any folder you grant with `/add-folder <path>` (`/remove-folder` and
-  `/list-folders` manage them). Read-only, as in tapto-code.
+  `/list-folders` manage them). Read-only, as in tapto-code. ([8c1808b])
 - `/effort` shows or changes how hard the model thinks without restarting:
   Claude's `low` to `max`, or the openai dialect's `reasoning_effort`. The level
-  is saved for the folder tapto-vnc was started in.
+  is saved for the folder tapto-vnc was started in. ([8c1808b])
 - `--resume` and `/resume` continue the conversation last held with the same
   machine from the same folder, after Ctrl-C, a closed window or a crash. The
   model takes a new screenshot before doing anything, since the screen may have
-  changed in the meantime.
+  changed in the meantime. ([8c1808b])
 
 ## [1.0.0] — 2026-09-14
 
@@ -309,11 +311,13 @@ screenshots as tools. ([3d11be9])
 - `NOMINMAX` for Windows builds, where `<windows.h>` breaks `std::min` and
   `std::max` in the vendored RFB sources under MSVC. ([f069d78])
 
-[Unreleased]: https://github.com/centlakestefan/tapto-vnc/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/centlakestefan/tapto-vnc/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/centlakestefan/tapto-vnc/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/centlakestefan/tapto-vnc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/centlakestefan/tapto-vnc/releases/tag/v0.1.0
+[8c1808b]: https://github.com/centlakestefan/tapto-vnc/commit/8c1808b
 [024e1f0]: https://github.com/centlakestefan/tapto-vnc/commit/024e1f0
 [3d11be9]: https://github.com/centlakestefan/tapto-vnc/commit/3d11be9
 [42a022d]: https://github.com/centlakestefan/tapto-vnc/commit/42a022d
